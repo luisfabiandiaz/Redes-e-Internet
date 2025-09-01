@@ -18,7 +18,7 @@ void manejarCliente(int clienteSock) {
     while (true) {
         int bytes = recv(clienteSock, buffer, sizeof(buffer) - 1, 0);
         if (bytes <= 0) {
-            cout << nickCliente << " se desconectó." << endl;
+            cout << nickCliente << " se desconecto" << endl;
             close(clienteSock);
             return;
         }
@@ -29,7 +29,7 @@ void manejarCliente(int clienteSock) {
         if (tipo == 'n') {
             int tam = stoi(recibido.substr(1, 2));
             nickCliente = recibido.substr(3, tam);
-            cout << "[Se cambió nick]: " << nickCliente << endl;
+            cout << "(Se cambio nick): " << nickCliente << endl;
         } else if (tipo == 'm') {
             int tam = stoi(recibido.substr(1, 3));
             string msg = recibido.substr(4, tam);
@@ -38,27 +38,27 @@ void manejarCliente(int clienteSock) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    int puerto = stoi(argv[1]);
     int servidor = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in stSockAddr{};
     stSockAddr.sin_family = AF_INET;
-    stSockAddr.sin_port = htons(8080);
+    stSockAddr.sin_port = htons(puerto);
     stSockAddr.sin_addr.s_addr = INADDR_ANY;
 
     bind(servidor, (sockaddr*)&stSockAddr, sizeof(stSockAddr));
     listen(servidor, 1);
 
-    cout << "Esperando conexión...\n";
+    cout << "Esperando conexion\n";
     sockaddr_in direccionCliente;
     socklen_t tam = sizeof(direccionCliente);
     int clienteSock = accept(servidor, (sockaddr*)&direccionCliente, &tam);
 
-    cout << "Cliente conectado!\n";
+    cout << "Cliente conectado\n";
 
     thread t(manejarCliente, clienteSock);
     t.detach();
 
-    // enviar mensajes
     string entrada;
     while (true) {
         cout << "Ingrese mensaje: \n";

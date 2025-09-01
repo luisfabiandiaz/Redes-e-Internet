@@ -19,7 +19,7 @@ void recibirMensajes(int socketCliente) {
     while (true) {
         int bytes = recv(socketCliente, buffer, sizeof(buffer) - 1, 0);
         if (bytes <= 0) {
-            cout << "Desconectado del servidor." << endl;
+            cout << "Desconectado del servidor" << endl;
             close(socketCliente);
             exit(0);
         }
@@ -30,7 +30,7 @@ void recibirMensajes(int socketCliente) {
         if (tipo == 'n') {
             int tam = stoi(recibido.substr(1, 2));
             nickServidor = recibido.substr(3, tam);
-            cout << "[El servidor cambió nick a]: " << nickServidor << endl;
+            cout << "(El servidor cambio nick a): " << nickServidor << endl;
         } else if (tipo == 'm') {
             int tam = stoi(recibido.substr(1, 3));
             string msg = recibido.substr(4, tam);
@@ -39,11 +39,12 @@ void recibirMensajes(int socketCliente) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    int puerto = stoi(argv[1]);
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in stSockAddr{};
     stSockAddr.sin_family = AF_INET;
-    stSockAddr.sin_port = htons(8080);
+    stSockAddr.sin_port = htons(puerto);
     stSockAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if (connect(sock, (sockaddr*)&stSockAddr, sizeof(stSockAddr)) == -1) {
@@ -51,7 +52,7 @@ int main() {
         return 1;
     }
 
-    cout << "Conectado al servidor!\n";
+    cout << "Conectado al servidor\n";
 
     thread t(recibirMensajes, sock);
     t.detach();
