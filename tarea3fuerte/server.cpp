@@ -11,96 +11,138 @@
 #include <thread>
 #include <unordered_map>
 using namespace std;
+unordered_map<string, int> clientes_conectados;
 
-unordered_map<string, int> clientesConectados;
-
-void broadcast(const string& mensaje, int emisor = -1) {
-    for (auto& cliente : clientesConectados) {
-        if (cliente.second != emisor) {
-            send(cliente.second, mensaje.c_str(), mensaje.size(), 0);
+void broadcast(const string& msg, int emisor = -1) {
+    for (auto& p : clientes_conectados) {
+        if (p.second != emisor) {
+            send(p.second, msg.c_str(), msg.size(), 0);
         }
     }
 }
 
-void manejarCliente(int socketCliente) {
+void manejarCliente(int client_socket) {
     char buffer[1024];
     string nick = "Anon";
 
     while (true) {
-        int bytesLeidos = recv(socketCliente, buffer, 1, 0); 
-        if (bytesLeidos <= 0) {
-            string aviso = "X" + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size())) + nick;
-            broadcast(aviso, socketCliente);
-            clientesConectados.erase(nick);
+        int n = recv(client_socket, buffer, 1, 0); 
+        if (n <= 0) {
+            string aviso = "X" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick;
+            broadcast(aviso, client_socket);
+            clientes_conectados.erase(nick);
             cout << nick << " se desconectó." << endl;
-            close(socketCliente);
+            close(client_socket);
             return;
         }
 
-        char tipoMensaje = buffer[0];
+        char tipo = buffer[0];
 
-        if (tipoMensaje == 'n') { 
-            recv(socketCliente, buffer, 2, 0);
+        if (tipo == 'n') { 
+            recv(client_socket, buffer, 2, 0);
             int tamNick = stoi(string(buffer, 2));
-
-            recv(socketCliente, buffer, tamNick, 0);
+            recv(client_socket, buffer, tamNick, 0);
             string nuevoNick(buffer, tamNick);
-            clientesConectados.erase(nick);
+
+            string recibido = "n" 
+                + ((nuevoNick.size()<10) ? "0"+to_string(nuevoNick.size()):to_string(nuevoNick.size()))
+                + nuevoNick;
+            cout << recibido << endl;
+
+            if (clientes_conectados.count(nuevoNick)) {
+                string msg = "E" 
+                    + ((string("nickname already in use").size()<10) ? "00"+to_string(string("nickname already in use").size()):(string("nickname already in use").size()<100)?"0"+to_string(string("nickname already in use").size()):to_string(string("nickname already in use").size()))
+                    + "nickname already in use";
+                send(client_socket, msg.c_str(), msg.size(), 0);
+                cout << msg << endl;
+                continue;
+            }
+
+            clientes_conectados.erase(nick);
             nick = nuevoNick;
-            clientesConectados[nick] = socketCliente;
+            clientes_conectados[nick] = client_socket;
 
             cout << "Nuevo nick: " << nick << endl;
-            string aviso = "N" + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))+ nick;
-            broadcast(aviso, socketCliente);
+            string aviso = "N" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick;
+            broadcast(aviso, client_socket);
+            cout << aviso << endl;
         } 
-        else if (tipoMensaje == 'm') { 
-            recv(socketCliente, buffer, 3, 0);
-            int tamMensaje = stoi(string(buffer, 3));
+        else if (tipo == 'm') { 
+            recv(client_socket, buffer, 3, 0);
+            int tamMsg = stoi(string(buffer, 3));
+            recv(client_socket, buffer, tamMsg, 0);
+            string msg(buffer, tamMsg);
 
-            recv(socketCliente, buffer, tamMensaje, 0);
-            string mensaje(buffer, tamMensaje);
+            string recibido = "m" 
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            cout << recibido << endl;
 
-            cout << nick << ": " << mensaje << endl;
-
-            string enviar = "M" + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))+ nick + ((mensaje.size()<10) ? "00"+to_string(mensaje.size()):(mensaje.size()<100)?"0"+to_string(mensaje.size()):to_string(mensaje.size())) + mensaje;
-            broadcast(enviar, socketCliente);
+            string enviar = "M" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            broadcast(enviar, client_socket);
+            cout << enviar << endl;
         } 
-        else if (tipoMensaje == 't') { 
-            recv(socketCliente, buffer, 2, 0);
+        else if (tipo == 't') { 
+            recv(client_socket, buffer, 2, 0);
             int tamDest = stoi(string(buffer, 2));
+            recv(client_socket, buffer, tamDest, 0);
+            string dest(buffer, tamDest);
+            recv(client_socket, buffer, 3, 0);
+            int tamMsg = stoi(string(buffer, 3));
+            recv(client_socket, buffer, tamMsg, 0);
+            string msg(buffer, tamMsg);
 
-            recv(socketCliente, buffer, tamDest, 0);
-            string destinatario(buffer, tamDest);
+            string recibido = "t" 
+                + ((dest.size()<10) ? "0"+to_string(dest.size()):to_string(dest.size()))
+                + dest
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            cout << recibido << endl;
 
-            recv(socketCliente, buffer, 3, 0);
-            int tamMensaje = stoi(string(buffer, 3));
+            string enviar = "T" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
 
-            recv(socketCliente, buffer, tamMensaje, 0);
-            string mensaje(buffer, tamMensaje);
-
-            string enviar = "T" + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))+ nick+ ((mensaje.size()<10) ? "00"+to_string(mensaje.size()):(mensaje.size()<100)?"0"+to_string(mensaje.size()):to_string(mensaje.size()))+ mensaje;
-
-            if (clientesConectados.count(destinatario))
-                send(clientesConectados[destinatario], enviar.c_str(), enviar.size(), 0);
+            if (clientes_conectados.count(dest))
+                send(clientes_conectados[dest], enviar.c_str(), enviar.size(), 0);
+            cout << enviar << endl;
         } 
-        else if (tipoMensaje == 'l') { 
+        else if (tipo == 'l') { 
+            string recibido = "l";
+            cout << recibido << endl;
+
             string enviar = "L";
-            string cantidad = (clientesConectados.size()<10) ? "0"+to_string(clientesConectados.size()) : to_string(clientesConectados.size());
-            enviar += cantidad;
-
-            for (auto& cliente : clientesConectados) {
-                string tamNick = (cliente.first.size()<10) ? "0"+to_string(cliente.first.size()):to_string(cliente.first.size());
-                enviar += tamNick + cliente.first;
+            string cant = (clientes_conectados.size()<10) ? "0"+to_string(clientes_conectados.size()) : to_string(clientes_conectados.size());
+            enviar += cant;
+            for (auto& p : clientes_conectados) {
+                string tamNick = (p.first.size()<10) ? "0"+to_string(p.first.size()):to_string(p.first.size());
+                enviar += tamNick + p.first;
             }
-            send(socketCliente, enviar.c_str(), enviar.size(), 0);
+            send(client_socket, enviar.c_str(), enviar.size(), 0);
+            cout << enviar << endl;
         } 
-        else if (tipoMensaje == 'x') { 
-            string aviso = "X" + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))+ nick;
-            broadcast(aviso, socketCliente);
+        else if (tipo == 'x') { 
+            string recibido = "x";
+            cout << recibido << endl;
 
-            clientesConectados.erase(nick);
+            string aviso = "X" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick;
+            broadcast(aviso, client_socket);
+            clientes_conectados.erase(nick);
+            cout << aviso << endl;
             cout << nick << " salió." << endl;
-            close(socketCliente);
+            close(client_socket);
             return;
         }
     }
@@ -113,30 +155,28 @@ int main(int argc, char* argv[]) {
     }
 
     int puerto = atoi(argv[1]);
-    int socketServidor = socket(AF_INET, SOCK_STREAM, 0);
+    int servidor = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in stSockAddr{};
+    stSockAddr.sin_family = AF_INET;
+    stSockAddr.sin_port = htons(puerto);
+    stSockAddr.sin_addr.s_addr = INADDR_ANY;
 
-    sockaddr_in direccionServidor{};
-    direccionServidor.sin_family = AF_INET;
-    direccionServidor.sin_port = htons(puerto);
-    direccionServidor.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(socketServidor, (sockaddr*)&direccionServidor, sizeof(direccionServidor)) == -1) {
+    if (bind(servidor, (sockaddr*)&stSockAddr, sizeof(stSockAddr)) == -1) {
         perror("Error en bind");
-        close(socketServidor);
+        close(servidor);
         exit(1);
     }
 
-    listen(socketServidor, 10);
+    listen(servidor, 10);
     cout << "servidor activado en puerto: " << puerto << endl;
 
     while (true) {
-        int socketNuevoCliente = accept(socketServidor, nullptr, nullptr);
+        int clienteSock = accept(servidor, nullptr, nullptr);
         cout << "Nuevo cliente conectado" << endl;
-
-        thread t(manejarCliente, socketNuevoCliente);
+        thread t(manejarCliente, clienteSock);
         t.detach();
     }
 
-    close(socketServidor);
+    close(servidor);
     return 0;
 }
