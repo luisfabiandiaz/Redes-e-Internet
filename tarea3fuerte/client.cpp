@@ -9,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <fstream>
 using namespace std;
 
 void showMenu(){
@@ -16,7 +17,8 @@ void showMenu(){
     cout<<"2. Send message to someone"<<endl;
     cout<<"3. Send broadcast"<<endl;
     cout<<"4. Show list"<<endl;
-    cout<<"5. Exit"<<endl;
+    cout<<"5. Send a file"<<endl;
+    cout<<"6. Exit"<<endl;
 }
 
 void recibirMensajes(int socketCliente) {
@@ -126,6 +128,36 @@ void recibirMensajes(int socketCliente) {
 
             cout << "\nERROR: " << msg << endl;
         }
+        else if (tipo == 'F') {
+            recv(socketCliente, buffer, 2, 0);
+            int tamNick = stoi(string(buffer, 2));
+
+            recv(socketCliente, buffer, tamNick, 0);
+            string nick(buffer, tamNick);
+
+            recv(socketCliente, buffer, 2, 0);
+            int tamFileName = stoi(string(buffer, 2));
+
+            recv(socketCliente, buffer, tamFileName, 0);
+            string fileName(buffer, tamFileName);
+
+            recv(socketCliente, buffer, 10, 0);
+            int fileSize = stoi(string(buffer, 10));
+
+            string fileData(fileSize, '\0');
+            int recibidos = 0;
+            while (recibidos < fileSize) {
+                int n = recv(socketCliente, &fileData[recibidos], fileSize - recibidos, 0);
+                recibidos += n;
+            }
+
+            ofstream out("recv_" + fileName, ios::binary);
+            out.write(fileData.c_str(), fileSize);
+            out.close();
+
+            cout << "\nArchivo recibido de " << nick << ": " << fileName 
+                << " (" << fileSize << " bytes) guardado como recv_" << fileName << "\n";
+        }
     }
 }
 
@@ -197,6 +229,38 @@ int main(int argc, char* argv[]) {
             enviar = string(1, tipo);
         }
         else if(entrada == 5){
+            tipo = 'f';
+            cout << "Enter destination user: ";
+            cin >> destin;
+            cout << "Enter file name (must be in same folder): ";
+            string fileName;
+            cin >> fileName;
+
+            ifstream in(fileName, ios::binary);
+            if (!in) {
+                cout << "Error: could not open file " << fileName << endl;
+                continue;
+            }
+
+            // Leer archivo en memoria
+            in.seekg(0, ios::end);
+            int fileSize = in.tellg();
+            in.seekg(0, ios::beg);
+            string fileData(fileSize, '\0');
+            in.read(&fileData[0], fileSize);
+            in.close();
+
+            // Construcción de mensaje
+            string tamDestin = (destin.size() < 10) ? "0"+to_string(destin.size()) : to_string(destin.size());
+            string tamFileName = (fileName.size() < 10) ? "0"+to_string(fileName.size()) : to_string(fileName.size());
+            string tamFile = string(10 - to_string(fileSize).size(), '0') + to_string(fileSize);
+
+            enviar = string(1, tipo) + tamDestin + destin + tamFileName + fileName + tamFile + fileData;
+            send(sock, enviar.c_str(), enviar.size(), 0);
+
+            cout << "Archivo enviado: " << fileName << " (" << fileSize << " bytes) a " << destin << endl;
+        }
+        else if(entrada == 6){
             tipo='x';
             enviar = string(1, tipo);
             send(sock, enviar.c_str(), enviar.size(), 0);

@@ -1,0 +1,13 @@
+nc ucsp.edu.pe 80
+GET / HTTP/1.1
+Host: ucsp.edu.pe
+User-Agent: Mozilla/5.0
+Accept: text/html,application/xhtml+xml
+Accept-Language: en-us,en;q=0.5
+Accept-Encoding: gzip,deflate
+Accept-Charset: ISO-8859-1,utf-8;q=0.7
+Keep-Alive: 115
+Connection: close
+
+
+echo -e "GET / HTTP/1.1\r\nHost: ucsp.edu.pe\r\nConnection: close\r\n\r\n" | nc ucsp.edu.pe 80

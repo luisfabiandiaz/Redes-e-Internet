@@ -145,6 +145,47 @@ void manejarCliente(int client_socket) {
             close(client_socket);
             return;
         }
+        else if (tipo == 'f') {
+            recv(client_socket, buffer, 2, 0);
+            int tamDest = stoi(string(buffer, 2));
+
+            recv(client_socket, buffer, tamDest, 0);
+            string dest(buffer, tamDest);
+
+            recv(client_socket, buffer, 2, 0);
+            int tamFileName = stoi(string(buffer, 2));
+
+            recv(client_socket, buffer, tamFileName, 0);
+            string fileName(buffer, tamFileName);
+
+            recv(client_socket, buffer, 10, 0);
+            int fileSize = stoi(string(buffer, 10));
+
+            string fileData(fileSize, '\0');
+            int recibidos = 0;
+            while (recibidos < fileSize) {
+                int n = recv(client_socket, &fileData[recibidos], fileSize - recibidos, 0);
+                recibidos += n;
+            }
+
+            string nick;
+            for (auto& p : clientes_conectados)
+                if (p.second == client_socket) { nick = p.first; break; }
+
+            string enviar = "F"
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick
+                + ((fileName.size()<10) ? "0"+to_string(fileName.size()):to_string(fileName.size()))
+                + fileName
+                + string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
+                + fileData;
+
+            if (clientes_conectados.count(dest))
+                send(clientes_conectados[dest], enviar.c_str(), enviar.size(), 0);
+
+            cout << nick << " envió archivo '" << fileName 
+                << "' (" << fileSize << " bytes) a " << dest << endl;
+        }
     }
 }
 
