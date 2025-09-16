@@ -146,21 +146,23 @@ void manejarCliente(int client_socket) {
             return;
         }
         else if (tipo == 'f') {
+            // --- destinatario (2 bytes) ---
             recv(client_socket, buffer, 2, 0);
             int tamDest = stoi(string(buffer, 2));
-
             recv(client_socket, buffer, tamDest, 0);
             string dest(buffer, tamDest);
 
-            recv(client_socket, buffer, 2, 0);
-            int tamFileName = stoi(string(buffer, 2));
-
+            // --- nombre de archivo (3 bytes) ---
+            recv(client_socket, buffer, 3, 0);
+            int tamFileName = stoi(string(buffer, 3));
             recv(client_socket, buffer, tamFileName, 0);
             string fileName(buffer, tamFileName);
 
+            // --- tamaño de archivo (10 bytes) ---
             recv(client_socket, buffer, 10, 0);
             int fileSize = stoi(string(buffer, 10));
 
+            // --- datos del archivo ---
             string fileData(fileSize, '\0');
             int recibidos = 0;
             while (recibidos < fileSize) {
@@ -168,14 +170,25 @@ void manejarCliente(int client_socket) {
                 recibidos += n;
             }
 
+            // --- buscar nick del remitente ---
             string nick;
             for (auto& p : clientes_conectados)
                 if (p.second == client_socket) { nick = p.first; break; }
 
+            // --- imprimir lo recibido (sin fileData) ---
+            string recibido = "f"
+                + ( (dest.size()<10) ? "0"+to_string(dest.size()) : to_string(dest.size()) )
+                + dest
+                + ( (fileName.size()<100) ? string(3 - to_string(fileName.size()).size(), '0') + to_string(fileName.size()) : to_string(fileName.size()) )
+                + fileName
+                + string(10 - to_string(fileSize).size(), '0') + to_string(fileSize);
+            cout << recibido << endl;
+
+            // --- armar mensaje para enviar al destinatario ---
             string enviar = "F"
-                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + ( (nick.size()<10) ? "0"+to_string(nick.size()) : to_string(nick.size()) )
                 + nick
-                + ((fileName.size()<10) ? "0"+to_string(fileName.size()):to_string(fileName.size()))
+                + string(3 - to_string(fileName.size()).size(), '0') + to_string(fileName.size())
                 + fileName
                 + string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
                 + fileData;
@@ -183,8 +196,14 @@ void manejarCliente(int client_socket) {
             if (clientes_conectados.count(dest))
                 send(clientes_conectados[dest], enviar.c_str(), enviar.size(), 0);
 
-            cout << nick << " envió archivo '" << fileName 
-                << "' (" << fileSize << " bytes) a " << dest << endl;
+            // --- imprimir lo enviado (sin fileData) ---
+            cout << "F"
+                << ( (nick.size()<10) ? "0"+to_string(nick.size()) : to_string(nick.size()) )
+                << nick
+                << string(3 - to_string(fileName.size()).size(), '0') + to_string(fileName.size())
+                << fileName
+                << string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
+                << endl;
         }
     }
 }

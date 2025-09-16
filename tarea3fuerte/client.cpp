@@ -43,11 +43,12 @@ void recibirMensajes(int socketCliente) {
             recv(socketCliente, buffer, tamMsg, 0);
             string msg(buffer, tamMsg);
 
-            cout << "M"
-                 << ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
-                 << nick
-                 << ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
-                 << msg << endl;
+            string crudo = "M" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            cout << crudo << endl;
 
             cout << "\nnick: " << nick << " msg: " << msg << endl;
         } 
@@ -61,11 +62,12 @@ void recibirMensajes(int socketCliente) {
             recv(socketCliente, buffer, tamMsg, 0);
             string msg(buffer, tamMsg);
 
-            cout << "T"
-                 << ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
-                 << nick
-                 << ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
-                 << msg << endl;
+            string crudo = "T" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            cout << crudo << endl;
 
             cout << "\nmensaje privado de " << nick << " msg: " << msg << endl;
         } 
@@ -75,7 +77,6 @@ void recibirMensajes(int socketCliente) {
             string cantStr = (cantClientes < 10) ? "0" + to_string(cantClientes) : to_string(cantClientes);
 
             string crudo = "L" + cantStr;
-
             cout << "\nnum de conectados: " << cantClientes << endl;
 
             for (int i = 0; i < cantClientes; ++i) {
@@ -89,7 +90,6 @@ void recibirMensajes(int socketCliente) {
                 crudo += tamNickStr + nick;
                 cout << nick << endl;
             }
-
             cout << crudo << endl;
         }
         else if (tipo == 'N') {
@@ -98,9 +98,10 @@ void recibirMensajes(int socketCliente) {
             recv(socketCliente, buffer, tamNick, 0);
             string nick(buffer, tamNick);
 
-            cout << "N"
-                 << ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
-                 << nick << endl;
+            string crudo = "N" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick;
+            cout << crudo << endl;
 
             cout << "\n" << nick << " cambio su nick" << endl;
         }
@@ -110,9 +111,10 @@ void recibirMensajes(int socketCliente) {
             recv(socketCliente, buffer, tamNick, 0);
             string nick(buffer, tamNick);
 
-            cout << "X"
-                 << ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
-                 << nick << endl;
+            string crudo = "X" 
+                + ((nick.size()<10) ? "0"+to_string(nick.size()):to_string(nick.size()))
+                + nick;
+            cout << crudo << endl;
 
             cout << "\n" << nick << " se desconecto" << endl;
         }
@@ -122,28 +124,31 @@ void recibirMensajes(int socketCliente) {
             recv(socketCliente, buffer, tamMsg, 0);
             string msg(buffer, tamMsg);
 
-            cout << "E"
-                 << ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
-                 << msg << endl;
+            string crudo = "E" 
+                + ((msg.size()<10) ? "00"+to_string(msg.size()):(msg.size()<100)?"0"+to_string(msg.size()):to_string(msg.size()))
+                + msg;
+            cout << crudo << endl;
 
             cout << "\nERROR: " << msg << endl;
         }
         else if (tipo == 'F') {
+            // --- remitente (2 bytes) ---
             recv(socketCliente, buffer, 2, 0);
-            int tamNick = stoi(string(buffer, 2));
+            int tamRem = stoi(string(buffer, 2));
+            recv(socketCliente, buffer, tamRem, 0);
+            string remitente(buffer, tamRem);
 
-            recv(socketCliente, buffer, tamNick, 0);
-            string nick(buffer, tamNick);
-
-            recv(socketCliente, buffer, 2, 0);
-            int tamFileName = stoi(string(buffer, 2));
-
+            // --- nombre de archivo (3 bytes) ---
+            recv(socketCliente, buffer, 3, 0);
+            int tamFileName = stoi(string(buffer, 3));
             recv(socketCliente, buffer, tamFileName, 0);
             string fileName(buffer, tamFileName);
 
+            // --- tamaño de archivo (10 bytes) ---
             recv(socketCliente, buffer, 10, 0);
             int fileSize = stoi(string(buffer, 10));
 
+            // --- datos del archivo ---
             string fileData(fileSize, '\0');
             int recibidos = 0;
             while (recibidos < fileSize) {
@@ -151,12 +156,20 @@ void recibirMensajes(int socketCliente) {
                 recibidos += n;
             }
 
+            // --- guardar archivo recibido ---
             ofstream out("recv_" + fileName, ios::binary);
             out.write(fileData.c_str(), fileSize);
             out.close();
 
-            cout << "\nArchivo recibido de " << nick << ": " << fileName 
-                << " (" << fileSize << " bytes) guardado como recv_" << fileName << "\n";
+            // --- imprimir lo recibido (sin fileData) ---
+            string stamFileName = to_string(fileName.size());
+            cout << "F"
+                << (remitente.size() < 10 ? "0" + to_string(remitente.size()) : to_string(remitente.size()))
+                << remitente
+                << string(3 - stamFileName.size(), '0') + stamFileName
+                << fileName
+                << string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
+                << endl;
         }
     }
 }
@@ -228,43 +241,60 @@ int main(int argc, char* argv[]) {
             tipo='l';
             enviar = string(1, tipo);
         }
-        else if(entrada == 5){
-            tipo = 'f';
-            cout << "Enter destination user: ";
-            cin >> destin;
-            cout << "Enter file name (must be in same folder): ";
-            string fileName;
+        else if (entrada == 5) {
+            string dest, fileName;
+            cout << "Ingrese destinatario: ";
+            cin >> dest;
+            cout << "Ingrese nombre del archivo (mismo directorio): ";
             cin >> fileName;
 
             ifstream in(fileName, ios::binary);
             if (!in) {
-                cout << "Error: could not open file " << fileName << endl;
+                cerr << "No se pudo abrir el archivo.\n";
                 continue;
             }
 
-            // Leer archivo en memoria
             in.seekg(0, ios::end);
             int fileSize = in.tellg();
             in.seekg(0, ios::beg);
+
             string fileData(fileSize, '\0');
             in.read(&fileData[0], fileSize);
-            in.close();
 
-            // Construcción de mensaje
-            string tamDestin = (destin.size() < 10) ? "0"+to_string(destin.size()) : to_string(destin.size());
-            string tamFileName = (fileName.size() < 10) ? "0"+to_string(fileName.size()) : to_string(fileName.size());
-            string tamFile = string(10 - to_string(fileSize).size(), '0') + to_string(fileSize);
+            // --- armar mensaje ---
+            string enviar = "f";
 
-            enviar = string(1, tipo) + tamDestin + destin + tamFileName + fileName + tamFile + fileData;
+            // 2 bytes -> tamaño destinatario
+            enviar += (dest.size() < 10 ? "0" + to_string(dest.size()) : to_string(dest.size()));
+            enviar += dest;
+
+            // 3 bytes -> tamaño nombre archivo
+            string tamFileName = to_string(fileName.size());
+            enviar += string(3 - tamFileName.size(), '0') + tamFileName;
+            enviar += fileName;
+
+            // 10 bytes -> tamaño archivo
+            string tamFileSize = to_string(fileSize);
+            enviar += string(10 - tamFileSize.size(), '0') + tamFileSize;
+
+            enviar += fileData;
+
             send(sock, enviar.c_str(), enviar.size(), 0);
 
-            cout << "Archivo enviado: " << fileName << " (" << fileSize << " bytes) a " << destin << endl;
+            // --- imprimir lo enviado (sin fileData) ---
+            cout << "f"
+                << (dest.size() < 10 ? "0" + to_string(dest.size()) : to_string(dest.size()))
+                << dest
+                << string(3 - tamFileName.size(), '0') + tamFileName
+                << fileName
+                << string(10 - tamFileSize.size(), '0') + tamFileSize
+                << endl;
         }
         else if(entrada == 6){
             tipo='x';
             enviar = string(1, tipo);
-            send(sock, enviar.c_str(), enviar.size(), 0);
             cout << enviar << endl;
+            send(sock, enviar.c_str(), enviar.size(), 0);
             break;
         }
         cout << enviar << endl;
