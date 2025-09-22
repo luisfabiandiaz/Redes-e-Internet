@@ -10,7 +10,81 @@
 #include <string>
 #include <thread>
 #include <fstream>
+#include <cstring>
+#include <vector>
+
 using namespace std;
+
+// 1. Clase Sillón
+class Sillon {
+public:
+    int int_sillon;
+    char char_sillon;
+    float float_sillon;
+
+    Sillon(int is, char cs, float fs) 
+    : int_sillon(is), char_sillon(cs), float_sillon(fs) {}
+};
+
+// 2. Clase Mesa
+class Mesa {
+public:
+    int int_mesa;
+    char char_mesa;
+    float float_mesa;
+
+    Mesa(int im, char cm, float fm) 
+    : int_mesa(im), char_mesa(cm), float_mesa(fm) {}
+};
+
+// 3. Clase Cocina
+class Cocina {
+public:
+    int int_cocina;
+    char char_cocina;
+    float float_cocina;
+
+    Cocina(int ic, char cc, float fc) 
+    : int_cocina(ic), char_cocina(cc), float_cocina(fc) {}
+};
+
+// 4. Clase Sala
+class Sala {
+public:
+    int n;
+    char str[1000];
+    Sillon s;
+    Mesa m;
+    Cocina* c; // Puntero a un objeto de tipo Cocina
+
+    Sala(int n_n, const char* n_str, const Sillon& n_s, const Mesa& n_m, Cocina* n_c)
+        : n(n_n), s(n_s), m(n_m), c(n_c) {
+        std::strncpy(str, n_str, sizeof(str) - 1);
+        str[sizeof(str) - 1] = '\0'; 
+    }
+};
+
+// --- Funciones para la serialización de bits (MÉTODO INCORRECTO) ---
+
+// Función para serializar el objeto Sala a un string
+string serializarSala(const Sala& sala) {
+    size_t sala_size = sizeof(sala);
+    char* aux_ptr = (char*)(&sala);
+    string serialized_data;
+    serialized_data.resize(sala_size);
+    for (size_t i = 0; i < sala_size; ++i) {
+        serialized_data[i] = *(aux_ptr + i);
+    }
+    return serialized_data;
+}
+
+// Función para deserializar el string a un objeto Sala
+// CUIDADO: ESTO ES INSEGURO Y PUEDE CAUSAR ERRORES
+Sala deserializarSala(const string& serialized_data) {
+    Sala sala_recibida = *reinterpret_cast<const Sala*>(serialized_data.data());
+    return sala_recibida;
+}
+// -----------------------------------------------------------------
 
 void showMenu(){
     cout<<"1. Change your nickname"<<endl;
@@ -19,10 +93,11 @@ void showMenu(){
     cout<<"4. Show list"<<endl;
     cout<<"5. Send a file"<<endl;
     cout<<"6. Exit"<<endl;
+    cout<<"7. Send an object (experimental)"<<endl; // Nueva opción
 }
 
 void recibirMensajes(int socketCliente) {
-    char buffer[1024];
+    char buffer[2048];
 
     while (true) {
         int n = recv(socketCliente, buffer, 1, 0); 
@@ -132,23 +207,24 @@ void recibirMensajes(int socketCliente) {
             cout << "\nERROR: " << msg << endl;
         }
         else if (tipo == 'F') {
-            // --- remitente (2 bytes) ---
+
+            //remitente (2 bytes)
             recv(socketCliente, buffer, 2, 0);
             int tamRem = stoi(string(buffer, 2));
             recv(socketCliente, buffer, tamRem, 0);
             string remitente(buffer, tamRem);
 
-            // --- nombre de archivo (3 bytes) ---
+            //nombre de archivo (3 bytes)
             recv(socketCliente, buffer, 3, 0);
             int tamFileName = stoi(string(buffer, 3));
             recv(socketCliente, buffer, tamFileName, 0);
             string fileName(buffer, tamFileName);
 
-            // --- tamaño de archivo (10 bytes) ---
+            //tamaño de archivo (10 bytes)
             recv(socketCliente, buffer, 10, 0);
             int fileSize = stoi(string(buffer, 10));
 
-            // --- datos del archivo ---
+            //datos del archivo
             string fileData(fileSize, '\0');
             int recibidos = 0;
             while (recibidos < fileSize) {
@@ -156,12 +232,11 @@ void recibirMensajes(int socketCliente) {
                 recibidos += n;
             }
 
-            // --- guardar archivo recibido ---
+            //guardar archivo recibido
             ofstream out("recv_" + fileName, ios::binary);
             out.write(fileData.c_str(), fileSize);
             out.close();
 
-            // --- imprimir lo recibido (sin fileData) ---
             string stamFileName = to_string(fileName.size());
             cout << "F"
                 << (remitente.size() < 10 ? "0" + to_string(remitente.size()) : to_string(remitente.size()))
@@ -169,6 +244,39 @@ void recibirMensajes(int socketCliente) {
                 << string(3 - stamFileName.size(), '0') + stamFileName
                 << fileName
                 << string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
+                << endl;
+        }
+        else if (tipo == 'O') {
+            // --- Leer tamaño remitente ---
+            recv(socketCliente, buffer, 2, 0);
+            int tamRem = stoi(string(buffer, 2));
+
+            // --- Leer nick remitente ---
+            recv(socketCliente, buffer, tamRem, 0);
+            string remitente(buffer, tamRem);
+
+            // --- Leer tamaño objeto (10 bytes) ---
+            recv(socketCliente, buffer, 10, 0);
+            int tamObj = stoi(string(buffer, 10));
+
+            // --- Leer objeto ---
+            string objData(tamObj, '\0');
+            int recibidos = 0;
+            while (recibidos < tamObj) {
+                int n = recv(socketCliente, &objData[recibidos], tamObj - recibidos, 0);
+                recibidos += n;
+            }
+
+            cout << "Objeto recibido de " << remitente 
+                << " (" << tamObj << " bytes)" << endl;
+
+            // Deserializamos para ver contenido
+            Sala obj = deserializarSala(objData);
+            cout << "Sala recibida: n=" << obj.n 
+                << ", str=" << obj.str 
+                << ", sillon.int=" << obj.s.int_sillon 
+                << ", mesa.char=" << obj.m.char_mesa 
+                //<< ", cocina.float=" << obj.c->float_cocina 
                 << endl;
         }
     }
@@ -261,19 +369,15 @@ int main(int argc, char* argv[]) {
             string fileData(fileSize, '\0');
             in.read(&fileData[0], fileSize);
 
-            // --- armar mensaje ---
             string enviar = "f";
 
-            // 2 bytes -> tamaño destinatario
             enviar += (dest.size() < 10 ? "0" + to_string(dest.size()) : to_string(dest.size()));
             enviar += dest;
 
-            // 3 bytes -> tamaño nombre archivo
             string tamFileName = to_string(fileName.size());
             enviar += string(3 - tamFileName.size(), '0') + tamFileName;
             enviar += fileName;
 
-            // 10 bytes -> tamaño archivo
             string tamFileSize = to_string(fileSize);
             enviar += string(10 - tamFileSize.size(), '0') + tamFileSize;
 
@@ -281,13 +385,12 @@ int main(int argc, char* argv[]) {
 
             send(sock, enviar.c_str(), enviar.size(), 0);
 
-            // --- imprimir lo enviado (sin fileData) ---
             cout << "f"
                 << (dest.size() < 10 ? "0" + to_string(dest.size()) : to_string(dest.size()))
                 << dest
                 << string(3 - tamFileName.size(), '0') + tamFileName
                 << fileName
-                << string(10 - tamFileSize.size(), '0') + tamFileSize
+                << string(10 - tamFileSize.size(), '0') + to_string(fileSize)
                 << endl;
         }
         else if(entrada == 6){
@@ -297,8 +400,51 @@ int main(int argc, char* argv[]) {
             send(sock, enviar.c_str(), enviar.size(), 0);
             break;
         }
-        cout << enviar << endl;
-        send(sock, enviar.c_str(), enviar.size(), 0);
+        else if (entrada == 7) {
+            tipo = 'o'; // objeto
+
+            // --- Pedimos destinatario ---
+            cout << "Ingrese el nick del destinatario: ";
+            string destinatario;
+            cin >> destinatario;
+
+            // Longitud en 2 bytes (padding con ceros)
+            string tamDest = to_string(destinatario.size());
+            tamDest = string(2 - tamDest.size(), '0') + tamDest;
+
+            // --- Creamos objeto de ejemplo ---
+            Sillon sillon_ejemplo(123, 'S', 150.5f);
+            Mesa mesa_ejemplo(456, 'M', 75.0f);
+            Cocina cocina_ejemplo(789, 'C', 2000.75f);
+            Sala sala_ejemplo(101, "Sala de estar principal", sillon_ejemplo, mesa_ejemplo, &cocina_ejemplo);
+
+            // Serializamos
+            string datos_serializados = serializarSala(sala_ejemplo);
+
+            // Tamaño en 10 bytes
+            string tamObj = to_string(datos_serializados.size());
+            tamObj = string(10 - tamObj.size(), '0') + tamObj;
+
+            // --- Construcción del mensaje ---
+            string enviar = string(1, tipo) + tamDest + destinatario + tamObj + datos_serializados;
+
+            // Debug
+            cout << "Enviando objeto a " << destinatario << endl;
+            cout << "Mensaje crudo: o" << tamDest << destinatario 
+                << tamObj << "[objeto binario]" << endl;
+
+            // Envío
+            send(sock, enviar.c_str(), enviar.size(), 0);
+        }
+        else {
+            cout << "Opción no válida." << endl;
+            continue;
+        }
+
+        if (entrada != 7) {
+            cout << enviar << endl;
+            send(sock, enviar.c_str(), enviar.size(), 0);
+        }
     }
 
     close(sock);

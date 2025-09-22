@@ -22,7 +22,7 @@ void broadcast(const string& msg, int emisor = -1) {
 }
 
 void manejarCliente(int client_socket) {
-    char buffer[1024];
+    char buffer[2048];
     string nick = "Anon";
 
     while (true) {
@@ -146,23 +146,23 @@ void manejarCliente(int client_socket) {
             return;
         }
         else if (tipo == 'f') {
-            // --- destinatario (2 bytes) ---
+            //destinatario (2 bytes)
             recv(client_socket, buffer, 2, 0);
             int tamDest = stoi(string(buffer, 2));
             recv(client_socket, buffer, tamDest, 0);
             string dest(buffer, tamDest);
 
-            // --- nombre de archivo (3 bytes) ---
+            //nombre de archivo (3 bytes)
             recv(client_socket, buffer, 3, 0);
             int tamFileName = stoi(string(buffer, 3));
             recv(client_socket, buffer, tamFileName, 0);
             string fileName(buffer, tamFileName);
 
-            // --- tamaño de archivo (10 bytes) ---
+            //tamaño de archivo (10 bytes)
             recv(client_socket, buffer, 10, 0);
             int fileSize = stoi(string(buffer, 10));
 
-            // --- datos del archivo ---
+            //datos del archivo
             string fileData(fileSize, '\0');
             int recibidos = 0;
             while (recibidos < fileSize) {
@@ -170,12 +170,11 @@ void manejarCliente(int client_socket) {
                 recibidos += n;
             }
 
-            // --- buscar nick del remitente ---
+            //buscar nick del remitente
             string nick;
             for (auto& p : clientes_conectados)
                 if (p.second == client_socket) { nick = p.first; break; }
 
-            // --- imprimir lo recibido (sin fileData) ---
             string recibido = "f"
                 + ( (dest.size()<10) ? "0"+to_string(dest.size()) : to_string(dest.size()) )
                 + dest
@@ -184,7 +183,7 @@ void manejarCliente(int client_socket) {
                 + string(10 - to_string(fileSize).size(), '0') + to_string(fileSize);
             cout << recibido << endl;
 
-            // --- armar mensaje para enviar al destinatario ---
+            //armar mensaje
             string enviar = "F"
                 + ( (nick.size()<10) ? "0"+to_string(nick.size()) : to_string(nick.size()) )
                 + nick
@@ -196,7 +195,6 @@ void manejarCliente(int client_socket) {
             if (clientes_conectados.count(dest))
                 send(clientes_conectados[dest], enviar.c_str(), enviar.size(), 0);
 
-            // --- imprimir lo enviado (sin fileData) ---
             cout << "F"
                 << ( (nick.size()<10) ? "0"+to_string(nick.size()) : to_string(nick.size()) )
                 << nick
@@ -204,6 +202,43 @@ void manejarCliente(int client_socket) {
                 << fileName
                 << string(10 - to_string(fileSize).size(), '0') + to_string(fileSize)
                 << endl;
+        }
+        else if (tipo == 'o') {
+            // --- Leer tamaño destinatario ---
+            recv(client_socket, buffer, 2, 0);
+            int tamDest = stoi(string(buffer, 2));
+
+            // --- Leer nick destinatario ---
+            recv(client_socket, buffer, tamDest, 0);
+            string dest(buffer, tamDest);
+
+            // --- Leer tamaño objeto (10 bytes) ---
+            recv(client_socket, buffer, 10, 0);
+            int tamObj = stoi(string(buffer, 10));
+
+            // --- Leer objeto ---
+            string objData(tamObj, '\0');
+            int recibidos = 0;
+            while (recibidos < tamObj) {
+                int n = recv(client_socket, &objData[recibidos], tamObj - recibidos, 0);
+                recibidos += n;
+            }
+            string nick;
+            for (auto& p : clientes_conectados)
+                if (p.second == client_socket) { nick = p.first; break; }
+            // Buscar destinatario
+            string rem = nick;
+            string tamRem = to_string(rem.size());
+            tamRem = string(2 - tamRem.size(), '0') + tamRem;
+
+            string reenviar = "O" + tamRem + rem + 
+                            string(10 - to_string(tamObj).size(), '0') + to_string(tamObj) + 
+                            objData;
+            if (clientes_conectados.count(dest))
+                send(clientes_conectados[dest], reenviar.c_str(), reenviar.size(), 0);
+
+            cout << "Objeto reenviado de " << nick << " a " << dest 
+                << " (" << tamObj << " bytes)" << endl;
         }
     }
 }
