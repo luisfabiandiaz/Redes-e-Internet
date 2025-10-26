@@ -277,6 +277,7 @@ void recibirMensajes(int socketCliente) {
                 << ", sillon.int=" << obj.s.int_sillon 
                 << ", mesa.char=" << obj.m.char_mesa 
                 //<< ", cocina.float=" << obj.c->float_cocina 
+                //da error por cositas
                 << endl;
         }
     }
