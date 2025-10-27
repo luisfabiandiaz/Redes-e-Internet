@@ -19,201 +19,185 @@
 #include <unordered_map>
 using namespace std;
 
-#define MAXLINE 1024
+#define BUFFER_SIZE 1024
 
-string simbolo = "_";
-const int tamTablero = 3;
+string mi_simbolo_juego = "_";
+const int DIM_TABLERO = 3;
 
-struct sockaddr_in	 servaddr;
-socklen_t len_servaddr = sizeof(servaddr);
+struct sockaddr_in	 dir_servidor;
+socklen_t longitud_dir_servidor = sizeof(dir_servidor);
 
-struct FileFragmentBuffer {
-    map<int, string> fragments; 
-    int expectedTotalSize = 0;
-    int currentDataSize = 0;
-    string fileName;
-    string senderNick;
-    bool lastFragmentReceived = false;
+struct BandejaReensamblaje {
+    map<int, string> fragmentos;
+    int tamano_total_esperado = 0;
+    int datos_recibidos_actual = 0;
+    string nombre_archivo;
+    string apodo_remitente;
+    bool ultimo_fragmento_recibido = false;
 };
 
-
-void showMenu() {
-    cout << "\n---------------------------------" << endl;
+void mostrarMenu() {
+    cout << endl;
     cout << "1. Cambiar apodo" << endl;
     cout << "2. Enviar mensaje privado" << endl;
-    cout << "3. Enviar mensaje a todos" << endl;
-    cout << "4. Ver lista de participantes" << endl;
+    cout << "3. Enviar mensaje broadcast" << endl;
+    cout << "4. Ver lista de usuarios" << endl;
     cout << "5. Enviar un archivo" << endl;
-    cout << "6. Unirse a una partida" << endl;
-    cout << "7. Realizar jugada" << endl;
-    cout << "8. Desconectar" << endl;
-    cout << "---------------------------------" << endl;
-    cout << "Elige una opción: ";
+    cout << "6. Unirse a partida" << endl;
+    cout << "7. Realizar movimiento" << endl;
+    cout << "8. Salir" << endl;
+    cout << "Seleccione una opción: ";
 }
 
-void recibirMensajes(int socketCliente) {
-    char buffer[MAXLINE];
+void recibirMensajes(int socket_cliente) {
+    char bufer_recepcion[BUFFER_SIZE];
     
-    static unordered_map <string, FileFragmentBuffer> file_reassembly_buffers;
+    static unordered_map <string, BandejaReensamblaje> bandejas_archivos;
 
     while (true) {
-        memset(buffer, 0, sizeof(buffer));
-        int n = recvfrom(socketCliente, buffer, MAXLINE, 0, (struct sockaddr *) &servaddr, &len_servaddr);
+        memset(bufer_recepcion, 0, sizeof(bufer_recepcion));
+        int bytes_recibidos = recvfrom(socket_cliente, bufer_recepcion, BUFFER_SIZE, 0, (struct sockaddr *) &dir_servidor, &longitud_dir_servidor);
 
-        if (n <= 0) {
-            cout << "\nError al recibir del servidor." << endl;
-            close(socketCliente);
+        if (bytes_recibidos <= 0) {
+            cout << "\nError al recibir datos del servidor. Desconectando." << endl;
+            close(socket_cliente);
             return;
         }
-        
-        // <<< NOTA: No es necesario cambiar nada aquí >>>
-        // El servidor enviará sus mensajes (lista, chat, etc.) también con relleno,
-        // pero como tu lógica de parseo aquí se basa en longitudes explícitas
-        // (ej. stoi(cadena.substr(1, 2))), simplemente ignorará el relleno '#'
-        
-        string cadena(buffer, n); 
+
+        string paquete_recibido(bufer_recepcion, bytes_recibidos); 
         cout.flush();
 
-        cout << "\n[CLIENT RECV]: " << cadena.substr(0, 70) 
-             << (cadena.size() > 70 ? "..." : "") 
-             << " (size=" << n << ")" << endl;
+        cout << "\nclient recv:  " << paquete_recibido.substr(0, 70) << endl;
 
-        if (n > 0 && isdigit(cadena[0])) {
-            string seq_m = cadena.substr(0, 5);
-            int seq = stoi(seq_m);
+        if (bytes_recibidos > 0 && isdigit(paquete_recibido[0])) {
+            string seq_texto = paquete_recibido.substr(0, 5);
+            int num_secuencia = stoi(seq_texto);
             
-            char tipo_paquete = cadena[5]; 
-
-            if (tipo_paquete != 'f') { 
-                 cerr << "Error: Paquete con seq pero no es tipo 'f'" << endl;
+            char tipo_fragmento = paquete_recibido[5];
+            if (tipo_fragmento != 'F') { 
+                 cout<< "Error: Paquete con secuencia pero no es tipo 'F'" << endl;
                  continue;
             }
 
             int offset = 6; 
-            int tamNick = stoi(cadena.substr(offset, 2));
+            int longitud_apodo = stoi(paquete_recibido.substr(offset, 2));
             offset += 2;
-            string nick = cadena.substr(offset, tamNick);
-            offset += tamNick;
+            string apodo_remitente = paquete_recibido.substr(offset, longitud_apodo);
+            offset += longitud_apodo;
 
-            int tamFileName = stoi(cadena.substr(offset, 2));
+            int longitud_nombre_archivo = stoi(paquete_recibido.substr(offset, 2));
             offset += 2;
-            string fileName = cadena.substr(offset, tamFileName);
-            offset += tamFileName;
+            string nombre_archivo = paquete_recibido.substr(offset, longitud_nombre_archivo);
+            offset += longitud_nombre_archivo;
 
-            int fileSize = stoi(cadena.substr(offset, 10));
+            int tamano_archivo = stoi(paquete_recibido.substr(offset, 10));
             offset += 10;
 
-            string file_chunk_data = cadena.substr(offset);
-            
-            string transfer_key = nick + ":" + fileName;
+            string datos_fragmento = paquete_recibido.substr(offset);
 
-            if (file_reassembly_buffers.count(transfer_key) == 0) {
-                FileFragmentBuffer new_buffer;
-                new_buffer.expectedTotalSize = fileSize;
-                new_buffer.fileName = fileName;
-                new_buffer.senderNick = nick;
-                file_reassembly_buffers[transfer_key] = new_buffer;
-                cout << "Iniciando recepción de archivo '" << fileName << "' de " << nick << endl;
+            string clave_transferencia = apodo_remitente + ":" + nombre_archivo;
+
+            if (bandejas_archivos.count(clave_transferencia) == 0) {
+                BandejaReensamblaje nueva_bandeja;
+                nueva_bandeja.tamano_total_esperado = tamano_archivo;
+                nueva_bandeja.nombre_archivo = nombre_archivo;
+                nueva_bandeja.apodo_remitente = apodo_remitente;
+                bandejas_archivos[clave_transferencia] = nueva_bandeja;
+                cout << "Comenzando a recibir el archivo '" << nombre_archivo << "' de " << apodo_remitente << endl;
             }
 
-            FileFragmentBuffer& buffer = file_reassembly_buffers[transfer_key];
+            BandejaReensamblaje& bandeja_actual = bandejas_archivos[clave_transferencia];
 
-            if (buffer.fragments.count(seq)) {
-                cout << "Advertencia: Recibido fragmento duplicado (seq " << seq << "). Ignorando." << endl;
+            if (bandeja_actual.fragmentos.count(num_secuencia)) {
+                cout << "Aviso: Fragmento duplicado (seq " << num_secuencia << "). Omitiendo." << endl;
                 continue;
             }
 
-            // Esta lógica ya maneja el padding '#' correctamente
-            size_t padding_pos = file_chunk_data.find('#');
-            bool is_last = (padding_pos != string::npos);
-            string actual_data = (is_last) ? file_chunk_data.substr(0, padding_pos) : file_chunk_data;
+            size_t pos_relleno = datos_fragmento.find('#');
+            bool es_ultimo = (pos_relleno != string::npos);
+            string datos_reales = (es_ultimo) ? datos_fragmento.substr(0, pos_relleno) : datos_fragmento;
 
-            buffer.fragments[seq] = actual_data;
-            buffer.currentDataSize += actual_data.size();
+            bandeja_actual.fragmentos[num_secuencia] = datos_reales;
+            bandeja_actual.datos_recibidos_actual += datos_reales.size();
             
-            if (is_last) {
-                buffer.lastFragmentReceived = true;
-                cout << "Recibido último fragmento (seq " << seq << "). Tamaño actual: " 
-                     << buffer.currentDataSize << "/" << buffer.expectedTotalSize << endl;
+            if (es_ultimo) {
+                bandeja_actual.ultimo_fragmento_recibido = true;
+                cout << "Se recibió el último fragmento (seq " << num_secuencia << "). Total: " 
+                     << bandeja_actual.datos_recibidos_actual << "/" << bandeja_actual.tamano_total_esperado << endl;
             }
 
-            if (buffer.lastFragmentReceived && buffer.currentDataSize == buffer.expectedTotalSize) {
-                cout << "\n¡Archivo completo! Reensamblando '" << buffer.fileName << "'..." << endl;
+            if (bandeja_actual.ultimo_fragmento_recibido && bandeja_actual.datos_recibidos_actual == bandeja_actual.tamano_total_esperado) {
+                cout << "\n¡Transferencia completa! Ensamblando '" << bandeja_actual.nombre_archivo << "'..." << endl;
                 
-                string fullFileData;
-                for (const auto& pair : buffer.fragments) {
-                    fullFileData.append(pair.second);
+                string datos_archivo_completos;
+                for (const auto& par : bandeja_actual.fragmentos) {
+                    datos_archivo_completos.append(par.second);
                 }
 
-                if (fullFileData.size() == buffer.expectedTotalSize) {
-                    ofstream out("recv_" + buffer.fileName, ios::binary);
-                    out.write(fullFileData.c_str(), fullFileData.size());
+                if (datos_archivo_completos.size() == bandeja_actual.tamano_total_esperado) {
+                    ofstream out("recibido_" + bandeja_actual.nombre_archivo, ios::binary);
+                    out.write(datos_archivo_completos.c_str(), datos_archivo_completos.size());
                     out.close();
 
-                    cout << "Archivo recibido de " << buffer.senderNick << ": " << buffer.fileName 
-                         << " (" << fullFileData.size() << " bytes) guardado como recv_" << buffer.fileName << "\n";
+                    cout << "Archivo de " << bandeja_actual.apodo_remitente << ": " << bandeja_actual.nombre_archivo 
+                         << " (" << datos_archivo_completos.size() << " bytes) guardado como recibido_" << bandeja_actual.nombre_archivo << "\n";
                 } else {
-                    cout << "Error de reensamblaje: Tamaño final no coincide. Esperado: " 
-                         << buffer.expectedTotalSize << ", Obtenido: " << fullFileData.size() << endl;
+                    cout << "Fallo al ensamblar: Tamaño final no coincide. Esperado: " 
+                         << bandeja_actual.tamano_total_esperado << ", Obtenido: " << datos_archivo_completos.size() << endl;
                 }
                 
-                file_reassembly_buffers.erase(transfer_key);
+                bandejas_archivos.erase(clave_transferencia);
             
-            } else if (buffer.lastFragmentReceived) {
-                cout << "Error: Faltan paquetes. Tamaño actual: " 
-                     << buffer.currentDataSize << "/" << buffer.expectedTotalSize << ". Esperando más paquetes..." << endl;
+            } else if (bandeja_actual.ultimo_fragmento_recibido) {
+                cout << "Error: Aún faltan datos. Total: " 
+                     << bandeja_actual.datos_recibidos_actual << "/" << bandeja_actual.tamano_total_esperado << ". Esperando retransmisión..." << endl;
             }
 
         } 
         
-        else if (n > 0) {
-            char tipo = cadena[0];
+        else if (bytes_recibidos > 0) {
+            char tipo_paquete = paquete_recibido[0];
 
-            if (tipo == 'M') {
-            
-                int tamNick = stoi(cadena.substr(1, 2));
-                string nick = cadena.substr(3, tamNick);
-                int tamMsg = stoi(cadena.substr(3 + tamNick, 3));
-                string msg = cadena.substr(3 + tamNick + 3, tamMsg);
-                cout << "\n[" << nick << " dice]: " << msg << endl;
+            if (tipo_paquete == 'M') { 
+                int longitud_apodo = stoi(paquete_recibido.substr(1, 2));
+                string apodo_remitente = paquete_recibido.substr(3, longitud_apodo);
+                int longitud_mensaje = stoi(paquete_recibido.substr(3 + longitud_apodo, 3));
+                string contenido_mensaje = paquete_recibido.substr(3 + longitud_apodo + 3, longitud_mensaje);
+                cout << "\n[" << apodo_remitente << " (global)]: " << contenido_mensaje << endl;
 
-            } else if (tipo == 'T') {
-            
-                int tamNick = stoi(cadena.substr(1, 2));
-                string nick = cadena.substr(3, tamNick);
-                int tamMsg = stoi(cadena.substr(3 + tamNick, 3));
-                string msg = cadena.substr(3 + tamNick + 3, tamMsg);
-                cout << "\n[MENSAJE PRIVADO de " << nick << "]: " << msg << endl;
+            } else if (tipo_paquete == 'T') { 
+                int longitud_apodo = stoi(paquete_recibido.substr(1, 2));
+                string apodo_remitente = paquete_recibido.substr(3, longitud_apodo);
+                int longitud_mensaje = stoi(paquete_recibido.substr(3 + longitud_apodo, 3));
+                string contenido_mensaje = paquete_recibido.substr(3 + longitud_apodo + 3, longitud_mensaje);
+                cout << "\n[PRIVADO de " << apodo_remitente << "]: " << contenido_mensaje << endl;
 
-            } else if (tipo == 'L') {
-            
-                int cantClientes = stoi(cadena.substr(1, 2));
-                cout << "\n--- Participantes Conectados (" << cantClientes << ") ---" << endl;
+            } else if (tipo_paquete == 'L') { 
+                int total_usuarios = stoi(paquete_recibido.substr(1, 2));
+                cout << "\n--- Lista de Usuarios (" << total_usuarios << ") ---" << endl;
                 int offset = 3;
-                for (int i = 0; i < cantClientes; ++i) {
-                    int tamNick = stoi(cadena.substr(offset, 2));
+                for (int i = 0; i < total_usuarios; ++i) {
+                    int longitud_apodo = stoi(paquete_recibido.substr(offset, 2));
                     offset += 2;
-                    string nick = cadena.substr(offset, tamNick);
-                    offset += tamNick;
-                    cout << "- " << nick << endl;
+                    string apodo = paquete_recibido.substr(offset, longitud_apodo);
+                    offset += longitud_apodo;
+                    cout << "-> " << apodo << endl;
                 }
-                cout << "-------------------------------------" << endl;
+                cout << "-----------------------------------" << endl;
 
-            } else if (tipo == 'V') {
-              
-                simbolo = cadena.substr(1, 1);
-                cout << "\n¡Es tu turno! Juegas con '" << simbolo << "'" << endl;
+            } else if (tipo_paquete == 'V') { 
+                mi_simbolo_juego = paquete_recibido.substr(1, 1);
+                cout << "\n¡Te toca! Tu símbolo es '" << mi_simbolo_juego << "'" << endl;
 
-            } else if (tipo == 'v') {
-            
-                string tablero_str = cadena.substr(1, tamTablero * tamTablero); // Leemos solo los bytes del tablero
+            } else if (tipo_paquete == 'v') { 
+                string tablero_texto = paquete_recibido.substr(1, DIM_TABLERO * DIM_TABLERO); 
                 cout << "\n--- Tablero Actual ---" << endl;
-                for (int i = 0; i < tamTablero * tamTablero; i++) {
-                    cout << " " << tablero_str[i] << " ";
-                    if ((i + 1) % tamTablero == 0) {
+                for (int i = 0; i < DIM_TABLERO * DIM_TABLERO; i++) {
+                    cout << " " << tablero_texto[i] << " ";
+                    if ((i + 1) % DIM_TABLERO == 0) {
                         cout << endl;
-                        if (i < tamTablero * tamTablero - 1){
-                            for(int k=0; k<tamTablero; ++k) cout << "---";
+                        if (i < DIM_TABLERO * DIM_TABLERO - 1){
+                            for(int k=0; k<DIM_TABLERO; ++k) cout << "---";
                             cout << endl;
                         }
                     } else {
@@ -222,20 +206,20 @@ void recibirMensajes(int socketCliente) {
                 }
                 cout << "----------------------" << endl;
 
-            } else if (tipo == 'F') {
-                cerr << "Advertencia: Recibido paquete de archivo 'F' simple no fragmentado" << endl;
+            } else if (tipo_paquete == 'F') { 
+                cerr << "Aviso: Recibido paquete 'F' no fragmentado. Ignorando." << endl;
 
-            } else if (tipo == 'O') {
-                simbolo = "_";
-                string result = cadena.substr(1, 3);
-                if(result == "win"){
-                    cout << "\n¡FELICIDADES! ¡HAS GANADO LA PARTIDA!" << endl;
+            } else if (tipo_paquete == 'O') { 
+                mi_simbolo_juego = "_"; 
+                string resultado = paquete_recibido.substr(1, 3);
+                if(resultado == "win"){
+                    cout << "\n¡GANASTE LA PARTIDA!" << endl;
                 }
-                else if (result == "los") {
-                    cout << "\nHas perdido la partida. ¡Mejor suerte la próxima!" << endl;
+                else if (resultado == "los") {
+                    cout << "\nPerdiste. ¡Qué lástima!" << endl;
                 }
-                else if (result == "emp") {
-                    cout << "\nLa partida ha terminado en EMPATE." << endl;
+                else if (resultado == "emp") {
+                    cout << "\nEl juego terminó en empate." << endl;
                 }
             }
         }
@@ -244,188 +228,183 @@ void recibirMensajes(int socketCliente) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        cerr << "Uso: " << argv[0] << "<puerto>\n";
+        cerr << "Modo de uso: " << argv[0] << " <puerto_servidor>\n";
         return 1;
     }
     
-    char* host_ip = "127.0.0.1";
-    int port = atoi(argv[1]);
-    struct hostent *host = (struct hostent *)gethostbyname(host_ip);
+    char* ip_servidor = "127.0.0.1"; 
+    int puerto_servidor = atoi(argv[1]);
+    struct hostent *host_info = (struct hostent *)gethostbyname(ip_servidor);
     
-    char buffer[MAXLINE];
-
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        perror("Fallo al crear socket");
+    int socket_cliente = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_cliente < 0) {
+        perror("Fallo al crear el socket");
         exit(EXIT_FAILURE);
     }
 
-    memset(&servaddr, 0, sizeof(servaddr));
+    memset(&dir_servidor, 0, sizeof(dir_servidor));
 
-    servaddr.sin_family = AF_INET;
-	servaddr.sin_port = htons(port);
-    servaddr.sin_addr = *((struct in_addr *)host->h_addr);
+    dir_servidor.sin_family = AF_INET;
+	dir_servidor.sin_port = htons(puerto_servidor);
+    dir_servidor.sin_addr = *((struct in_addr *)host_info->h_addr);
 
-    thread t(recibirMensajes, sock);
-    t.detach();
+    thread hilo_receptor(recibirMensajes, socket_cliente);
+    hilo_receptor.detach();
 
-    cout << "Introduce tu apodo: ";
-    string Nicknamei;
-    cin >> Nicknamei;
-    string tamnick = (Nicknamei.size() < 10) ? "0" + to_string(Nicknamei.size()) : to_string(Nicknamei.size());
-    string enviarnick = string(1, 'n') + tamnick + Nicknamei;
+    cout << "Ingresa tu alias: ";
+    string apodo_inicial;
+    cin >> apodo_inicial;
+    string longitud_apodo_str = (apodo_inicial.size() < 10) ? "0" + to_string(apodo_inicial.size()) : to_string(apodo_inicial.size());
+    string paquete_apodo = string(1, 'n') + longitud_apodo_str + apodo_inicial;
     
-    enviarnick.append(MAXLINE - enviarnick.size(), '#');
+    paquete_apodo.append(BUFFER_SIZE - paquete_apodo.size(), '#'); 
     
-    cout << "[CLIENT SEND]: " << enviarnick.substr(0, 70) 
-         << "... (size=" << enviarnick.size() << ")" << endl;
+    cout << "client envio: " << paquete_apodo.substr(0, 70) << endl;
     
-    sendto(sock, enviarnick.c_str(), enviarnick.size(), 0, (const struct sockaddr *) &servaddr, sizeof(servaddr));
+    sendto(socket_cliente, paquete_apodo.c_str(), paquete_apodo.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
 
 
-    int entrada;
+    int opcion_menu;
     while (true) {
-        showMenu();
-        cin >> entrada;
+        mostrarMenu();
+        cin >> opcion_menu;
 
         if (cin.fail()) {
-            cout << "Entrada inválida. Por favor, introduce un número." << endl;
+            cout << "Opción incorrecta. Ingresa un número." << endl;
             cin.clear();
             cin.ignore(numeric_limits<streamsize>::max(), '\n');
             continue;
         }
 
-        string cont, tamaño, enviar, destin, tamañoDestin;
-        char tipo;
+        string contenido, longitud_str, paquete_a_enviar, apodo_destino, longitud_destino_str;
+        char tipo_paquete;
 
-        if (entrada == 1) {
-            tipo = 'n';
-            cout << "Introduce tu nuevo apodo: ";
-            cin >> cont;
-            int tamNick = cont.size();
-            tamaño = (tamNick < 10) ? "0" + to_string(tamNick) : to_string(tamNick);
-            enviar = string(1, tipo) + tamaño + cont;
-        } else if (entrada == 2) {
-            tipo = 't';
+        if (opcion_menu == 1) { 
+            tipo_paquete = 'n';
+            cout << "Ingresa tu nuevo alias: ";
+            cin >> contenido;
+            int tamNick = contenido.size();
+            longitud_str = (tamNick < 10) ? "0" + to_string(tamNick) : to_string(tamNick);
+            paquete_a_enviar = string(1, tipo_paquete) + longitud_str + contenido;
+        } else if (opcion_menu == 2) { 
+            tipo_paquete = 't';
             cout << "Destinatario: ";
-            cin >> destin;
+            cin >> apodo_destino;
             cout << "Mensaje: ";
             cin.ignore();
-            getline(cin, cont);
-            int tamDest = destin.size();
-            int tamMsg = cont.size();
-            tamañoDestin = (tamDest < 10) ? "0" + to_string(tamDest) : to_string(tamDest);
-            tamaño = (tamMsg < 10) ? "00" + to_string(tamMsg) : (tamMsg < 100) ? "0" + to_string(tamMsg) : to_string(tamMsg);
-            enviar = string(1, tipo) + tamañoDestin + destin + tamaño + cont;
-        } else if (entrada == 3) {
-            tipo = 'm';
+            getline(cin, contenido);
+            int longitud_destino = apodo_destino.size();
+            int longitud_mensaje = contenido.size();
+            longitud_destino_str = (longitud_destino < 10) ? "0" + to_string(longitud_destino) : to_string(longitud_destino);
+            longitud_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
+            paquete_a_enviar = string(1, tipo_paquete) + longitud_destino_str + apodo_destino + longitud_str + contenido;
+        } else if (opcion_menu == 3) { 
+            tipo_paquete = 'm';
             cout << "Mensaje para todos: ";
             cin.ignore();
-            getline(cin, cont);
-            int tamMsg = cont.size();
-            tamaño = (tamMsg < 10) ? "00" + to_string(tamMsg) : (tamMsg < 100) ? "0" + to_string(tamMsg) : to_string(tamMsg);
-            enviar = string(1, tipo) + tamaño + cont;
-        } else if (entrada == 4) {
-            tipo = 'l';
-            enviar = string(1, tipo);
+            getline(cin, contenido);
+            int longitud_mensaje = contenido.size();
+            longitud_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
+            paquete_a_enviar = string(1, tipo_paquete) + longitud_str + contenido;
+        } else if (opcion_menu == 4) { 
+            tipo_paquete = 'l';
+            paquete_a_enviar = string(1, tipo_paquete);
         } 
-        else if(entrada == 5){
-            tipo = 'f';
+        else if(opcion_menu == 5){ 
+            tipo_paquete = 'f'; 
             cout << "Destinatario: ";
-            cin >> destin;
-            cout << "Nombre del archivo (en la misma carpeta): ";
-            string fileName;
-            cin >> fileName;
+            cin >> apodo_destino;
+            cout << "Nombre del archivo (local): ";
+            string nombre_archivo_local;
+            cin >> nombre_archivo_local;
 
-            ifstream in(fileName, ios::binary);
-            if (!in) {
-                cout << "Error: no se pudo abrir el archivo " << fileName << endl;
+            ifstream archivo_entrada(nombre_archivo_local, ios::binary);
+            if (!archivo_entrada) {
+                cout << "Error: No se pudo abrir el archivo " << nombre_archivo_local << endl;
                 continue;
             }
 
-            in.seekg(0, ios::end);
-            int fileSize = in.tellg();
-            in.seekg(0, ios::beg);
-            string fileData(fileSize, '\0');
-            in.read(&fileData[0], fileSize);
-            in.close();
+            archivo_entrada.seekg(0, ios::end);
+            int tamano_archivo = archivo_entrada.tellg();
+            archivo_entrada.seekg(0, ios::beg);
+            string datos_archivo(tamano_archivo, '\0');
+            archivo_entrada.read(&datos_archivo[0], tamano_archivo);
+            archivo_entrada.close();
 
-            string tamDestin = (destin.size() < 10) ? "0"+to_string(destin.size()) : to_string(destin.size());
-            string tamFileName = (fileName.size() < 10) ? "0"+to_string(fileName.size()) : to_string(fileName.size());
-            string tamFile = string(10 - to_string(fileSize).size(), '0') + to_string(fileSize);
+            string longitud_destino_str = (apodo_destino.size() < 10) ? "0"+to_string(apodo_destino.size()) : to_string(apodo_destino.size());
+            string longitud_nombre_archivo_str = (nombre_archivo_local.size() < 10) ? "0"+to_string(nombre_archivo_local.size()) : to_string(nombre_archivo_local.size());
+            string tamano_archivo_str = string(10 - to_string(tamano_archivo).size(), '0') + to_string(tamano_archivo);
 
-            string file_header = string(1, tipo) + tamDestin + destin + tamFileName + fileName + tamFile;
+            string encabezado_archivo = string(1, tipo_paquete) + longitud_destino_str + apodo_destino + longitud_nombre_archivo_str + nombre_archivo_local + tamano_archivo_str;
 
-            int data_chunk_size = MAXLINE - file_header.size() - 5; 
-            int seq = 0;
-            int bytes_sent = 0;
+            int tamano_fragmento_datos = BUFFER_SIZE - encabezado_archivo.size() - 5; 
+            int num_secuencia = 0;
+            int bytes_enviados = 0;
 
-            while (bytes_sent < fileSize) {
-                string seq_str = to_string(seq);
-                string seq_m = string(5 - seq_str.size(), '0') + seq_str;
+            while (bytes_enviados < tamano_archivo) {
+                string seq_como_texto = to_string(num_secuencia);
+                string seq_texto_formato = string(5 - seq_como_texto.size(), '0') + seq_como_texto;
                 
-                int current_chunk_data_size = min(data_chunk_size, fileSize - bytes_sent);
+                int tamano_fragmento_actual = min(tamano_fragmento_datos, tamano_archivo - bytes_enviados);
                 
-                string file_chunk = fileData.substr(bytes_sent, current_chunk_data_size);
+                string fragmento_datos = datos_archivo.substr(bytes_enviados, tamano_fragmento_actual);
                 
-                string packet_to_send = seq_m + file_header + file_chunk;
+                string paquete_fragmento = seq_texto_formato + encabezado_archivo + fragmento_datos;
                 
-                bool is_last = (bytes_sent + current_chunk_data_size == fileSize);
+                bool es_ultimo = (bytes_enviados + tamano_fragmento_actual == tamano_archivo);
 
-                if (is_last) {
-                    packet_to_send.append(MAXLINE - packet_to_send.size(), '#');
+                if (es_ultimo) {
+                    paquete_fragmento.append(BUFFER_SIZE - paquete_fragmento.size(), '#');
                 }
 
-                cout << "[CLIENT SEND]: " << packet_to_send.substr(0, 70) 
-                     << "... (seq=" << seq_m << ", size=" << packet_to_send.size() << (is_last ? " [LAST]" : "") << ")\n";
+                cout << "client envio: " << paquete_fragmento.substr(0, 70) 
+                     << "... (seq=" << seq_texto_formato << ", tam=" << paquete_fragmento.size() << (es_ultimo ? " (ULTIMO)" : "") << ")\n";
 
-                sendto(sock, packet_to_send.c_str(), packet_to_send.size(), 0, (const struct sockaddr *) &servaddr, sizeof(servaddr));
+                sendto(socket_cliente, paquete_fragmento.c_str(), paquete_fragmento.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
 
-                bytes_sent += current_chunk_data_size;
-                seq++;
+                bytes_enviados += tamano_fragmento_actual;
+                num_secuencia++;
 
                 usleep(1000); 
             }
             
-            continue; 
+            continue;
         }
-        else if (entrada == 6) {
-            tipo = 'p';
-            enviar = string(1, tipo);
-        } else if (entrada == 7) {
-            if (simbolo == "_") {
-                cout << "No es tu turno o no estás en una partida." << endl;
+        else if (opcion_menu == 6) { 
+            tipo_paquete = 'p';
+            paquete_a_enviar = string(1, tipo_paquete);
+        } else if (opcion_menu == 7) { 
+            if (mi_simbolo_juego == "_") {
+                cout << "No puedes jugar ahora (no es tu turno o no estás en partida)." << endl;
                 continue;
             }
-            cout << "Introduce tu jugada (posición 1-" << tamTablero * tamTablero << "): ";
-            int pos;
-            cin >> pos;
-            enviar = string(1, 'w') + simbolo + to_string(pos);
-        } else if (entrada == 8) {
-            tipo = 'x';
-            enviar = string(1, tipo);
+            cout << "Ingresa tu movimiento (posición 1-" << DIM_TABLERO * DIM_TABLERO << "): ";
+            int posicion_jugada;
+            cin >> posicion_jugada;
+            paquete_a_enviar = string(1, 'w') + mi_simbolo_juego + to_string(posicion_jugada);
+        } else if (opcion_menu == 8) { 
+            tipo_paquete = 'x';
+            paquete_a_enviar = string(1, tipo_paquete);
             
-            enviar.append(MAXLINE - enviar.size(), '#');
+            paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
 
-            cout << "[CLIENT SEND]: " << enviar.substr(0, 70) 
-                 << "... (size=" << enviar.size() << ")" << endl;
+            cout << "client envio: " << paquete_a_enviar.substr(0, 70) << endl;
             
-            sendto(sock, enviar.c_str(), enviar.size(), 0, (const struct sockaddr *) &servaddr, sizeof(servaddr));
+            sendto(socket_cliente, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
             break; 
         } else {
-            cout << "Opción no válida." << endl;
+            cout << "Opción no reconocida." << endl;
             continue;
         }
         
-        enviar.append(MAXLINE - enviar.size(), '#');
+        paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
         
-        cout << "[CLIENT SEND]: " << enviar.substr(0, 70) 
-             << "... (size=" << enviar.size() << ")" << endl;
-        sendto(sock, enviar.c_str(), enviar.size(), 0, (const struct sockaddr *) &servaddr, sizeof(servaddr));
+        cout << "client envio: " << paquete_a_enviar.substr(0, 70) << endl;
+        sendto(socket_cliente, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
     }
 
-    close(sock);
-    cout << "Desconectado." << endl;
+    close(socket_cliente);
+    cout << "Conexión cerrada." << endl;
     exit(0); 
     return 0;
 }
