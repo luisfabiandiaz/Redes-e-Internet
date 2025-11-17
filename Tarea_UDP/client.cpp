@@ -17,9 +17,16 @@
 #include <map> 
 #include <cctype> 
 #include <unordered_map>
+#include <mutex>
+#include <set>
+#include <chrono>
+
 using namespace std;
 
 #define BUFFER_SIZE 1024
+
+const int TIMEOUT_MS = 2000; 
+const int MAX_REINTENTOS = 5;  
 
 string mi_simbolo_juego = "_";
 const int DIM_TABLERO = 3;
@@ -33,8 +40,26 @@ struct BandejaReensamblaje {
     int datos_recibidos_actual = 0;
     string nombre_archivo;
     string apodo_remitente;
-    bool ultimo_fragmento_recibido = false;
+    // 'ultimo_fragmento_recibido' ya no es necesario aquí, 
+    // lo manejamos con el tipo de paquete 'E'
 };
+
+std::mutex mtx_acks;
+std::set<int> acks_recibidos_para_envio_actual;
+
+
+unsigned char calcular_crc(const string& datos) {
+    unsigned char crc = 0;
+    for (char c : datos) {
+        crc += (unsigned char)c;
+    }
+    return crc;
+}
+
+string crc_a_texto(unsigned char crc) {
+    string crc_str = to_string(crc);
+    return string(3 - crc_str.size(), '0') + crc_str; 
+}
 
 void mostrarMenu() {
     cout << endl;
@@ -67,32 +92,38 @@ void recibirMensajes(int socket_cliente) {
         string paquete_recibido(bufer_recepcion, bytes_recibidos); 
         cout.flush();
 
-        cout << "\nclient recv:  " << paquete_recibido.substr(0, 70) << endl;
+        cout << "\nclient recv:  " << paquete_recibido.substr(0, 70) << "..." << endl;
 
         if (bytes_recibidos > 0 && isdigit(paquete_recibido[0])) {
+            
             string seq_texto = paquete_recibido.substr(0, 5);
             int num_secuencia = stoi(seq_texto);
             
+            // +++ MODIFICADO: LEER 'F' o 'E' +++
             char tipo_fragmento = paquete_recibido[5];
-            if (tipo_fragmento != 'F') { 
-                 cout<< "Error: Paquete con secuencia pero no es tipo 'F'" << endl;
+            bool es_ultimo_paquete = (tipo_fragmento == 'E');
+
+            if (tipo_fragmento != 'F' && tipo_fragmento != 'E') { 
+                 cout<< "Error: Paquete con secuencia pero no es tipo 'F' o 'E'" << endl;
                  continue;
             }
-
+            // ---
+            
             int offset = 6; 
             int longitud_apodo = stoi(paquete_recibido.substr(offset, 2));
             offset += 2;
             string apodo_remitente = paquete_recibido.substr(offset, longitud_apodo);
             offset += longitud_apodo;
-
             int longitud_nombre_archivo = stoi(paquete_recibido.substr(offset, 2));
             offset += 2;
             string nombre_archivo = paquete_recibido.substr(offset, longitud_nombre_archivo);
             offset += longitud_nombre_archivo;
-
             int tamano_archivo = stoi(paquete_recibido.substr(offset, 10));
             offset += 10;
-
+            string crc_recibido_str = paquete_recibido.substr(offset, 3);
+            unsigned char crc_recibido = (unsigned char)stoi(crc_recibido_str);
+            offset += 3;
+            
             string datos_fragmento = paquete_recibido.substr(offset);
 
             string clave_transferencia = apodo_remitente + ":" + nombre_archivo;
@@ -107,71 +138,108 @@ void recibirMensajes(int socket_cliente) {
             }
 
             BandejaReensamblaje& bandeja_actual = bandejas_archivos[clave_transferencia];
+            
+            // +++ MODIFICADO: Lógica de 'datos_reales' +++
+            string datos_reales;
+            if (es_ultimo_paquete) {
+                // Solo si es el último paquete, buscamos '#'
+                size_t pos_relleno = datos_fragmento.find('#');
+                if (pos_relleno != string::npos) {
+                    datos_reales = datos_fragmento.substr(0, pos_relleno);
+                } else {
+                    datos_reales = datos_fragmento; // No deberia pasar, pero por si acaso
+                }
+            } else {
+                // Si NO es el último paquete, tomamos *todos* los datos.
+                datos_reales = datos_fragmento;
+            }
+            // ---
+
+            unsigned char crc_calculado = calcular_crc(datos_reales);
+            if (crc_calculado != crc_recibido) {
+                cout << "\n¡ERROR DE CHECKSUM! Paquete " << seq_texto << " de " << apodo_remitente << " está corrupto. Descartando." << endl;
+                cout << "  CRC Recibido: " << (int)crc_recibido << ", CRC Calculado: " << (int)crc_calculado << endl;
+                continue; 
+            }
+
+            string longitud_destino_str = (apodo_remitente.size() < 10) ? "0"+to_string(apodo_remitente.size()) : to_string(apodo_remitente.size());
+            string paquete_ack = "A" + seq_texto + longitud_destino_str + apodo_remitente;
+            paquete_ack.append(BUFFER_SIZE - paquete_ack.size(), '#');
+            
+            cout << "client envio (ACK): " << paquete_ack.substr(0, 70) << "..." << endl;
+            sendto(socket_cliente, paquete_ack.c_str(), paquete_ack.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
 
             if (bandeja_actual.fragmentos.count(num_secuencia)) {
                 cout << "Aviso: Fragmento duplicado (seq " << num_secuencia << "). Omitiendo." << endl;
                 continue;
             }
 
-            size_t pos_relleno = datos_fragmento.find('#');
-            bool es_ultimo = (pos_relleno != string::npos);
-            string datos_reales = (es_ultimo) ? datos_fragmento.substr(0, pos_relleno) : datos_fragmento;
-
             bandeja_actual.fragmentos[num_secuencia] = datos_reales;
             bandeja_actual.datos_recibidos_actual += datos_reales.size();
             
-            if (es_ultimo) {
-                bandeja_actual.ultimo_fragmento_recibido = true;
+            // +++ MODIFICADO: Lógica de ensamblaje +++
+            if (es_ultimo_paquete) {
                 cout << "Se recibió el último fragmento (seq " << num_secuencia << "). Total: " 
                      << bandeja_actual.datos_recibidos_actual << "/" << bandeja_actual.tamano_total_esperado << endl;
-            }
 
-            if (bandeja_actual.ultimo_fragmento_recibido && bandeja_actual.datos_recibidos_actual == bandeja_actual.tamano_total_esperado) {
-                cout << "\n¡Transferencia completa! Ensamblando '" << bandeja_actual.nombre_archivo << "'..." << endl;
-                
-                string datos_archivo_completos;
-                for (const auto& par : bandeja_actual.fragmentos) {
-                    datos_archivo_completos.append(par.second);
-                }
+                if (bandeja_actual.datos_recibidos_actual == bandeja_actual.tamano_total_esperado) {
+                    cout << "\n¡Transferencia completa! Ensamblando '" << bandeja_actual.nombre_archivo << "'..." << endl;
+                    
+                    string datos_archivo_completos;
+                    // Asumimos que los fragmentos llegaron en orden gracias a Stop-and-Wait
+                    // (Si usáramos Window, tendríamos que reordenar el map aquí)
+                    for (const auto& par : bandeja_actual.fragmentos) {
+                        datos_archivo_completos.append(par.second);
+                    }
 
-                if (datos_archivo_completos.size() == bandeja_actual.tamano_total_esperado) {
-                    ofstream out("recibido_" + bandeja_actual.nombre_archivo, ios::binary);
-                    out.write(datos_archivo_completos.c_str(), datos_archivo_completos.size());
-                    out.close();
+                    if (datos_archivo_completos.size() == bandeja_actual.tamano_total_esperado) {
+                        ofstream out("recibido_" + bandeja_actual.nombre_archivo, ios::binary);
+                        out.write(datos_archivo_completos.c_str(), datos_archivo_completos.size());
+                        out.close();
 
-                    cout << "Archivo de " << bandeja_actual.apodo_remitente << ": " << bandeja_actual.nombre_archivo 
-                         << " (" << datos_archivo_completos.size() << " bytes) guardado como recibido_" << bandeja_actual.nombre_archivo << "\n";
+                        cout << "Archivo de " << bandeja_actual.apodo_remitente << ": " << bandeja_actual.nombre_archivo 
+                             << " (" << datos_archivo_completos.size() << " bytes) guardado como recibido_" << bandeja_actual.nombre_archivo << "\n";
+                    } else {
+                        cout << "Fallo al ensamblar: Tamaño final no coincide. Esperado: " 
+                             << bandeja_actual.tamano_total_esperado << ", Obtenido: " << datos_archivo_completos.size() << endl;
+                    }
+                    
+                    bandejas_archivos.erase(clave_transferencia);
                 } else {
-                    cout << "Fallo al ensamblar: Tamaño final no coincide. Esperado: " 
-                         << bandeja_actual.tamano_total_esperado << ", Obtenido: " << datos_archivo_completos.size() << endl;
+                    cout << "Error: Se recibió el último paquete, pero el tamaño total no coincide. Total: " 
+                         << bandeja_actual.datos_recibidos_actual << "/" << bandeja_actual.tamano_total_esperado << "..." << endl;
                 }
-                
-                bandejas_archivos.erase(clave_transferencia);
-            
-            } else if (bandeja_actual.ultimo_fragmento_recibido) {
-                cout << "Error: Aún faltan datos. Total: " 
-                     << bandeja_actual.datos_recibidos_actual << "/" << bandeja_actual.tamano_total_esperado << ". Esperando retransmisión..." << endl;
             }
-
+            // ---
         } 
         
         else if (bytes_recibidos > 0) {
             char tipo_paquete = paquete_recibido[0];
 
-            if (tipo_paquete == 'M') { 
+            if (tipo_paquete == 'A') { 
+                string seq_ack_str = paquete_recibido.substr(1, 5);
+                int seq_ack_num = stoi(seq_ack_str);
+                int longitud_apodo = stoi(paquete_recibido.substr(6, 2));
+                string apodo_origen = paquete_recibido.substr(8, longitud_apodo);
+                cout << "\n[ACK Recibido] de " << apodo_origen << " para el fragmento seq=" << seq_ack_str << endl;
+                {
+                    std::lock_guard<std::mutex> lock(mtx_acks);
+                    acks_recibidos_para_envio_actual.insert(seq_ack_num);
+                }
+            }
+            // ... (Resto de 'M', 'T', 'L', 'V', 'v', 'O' no cambia) ...
+            else if (tipo_paquete == 'M') { 
                 int longitud_apodo = stoi(paquete_recibido.substr(1, 2));
                 string apodo_remitente = paquete_recibido.substr(3, longitud_apodo);
                 int longitud_mensaje = stoi(paquete_recibido.substr(3 + longitud_apodo, 3));
                 string contenido_mensaje = paquete_recibido.substr(3 + longitud_apodo + 3, longitud_mensaje);
                 cout << "\n[" << apodo_remitente << " (global)]: " << contenido_mensaje << endl;
-
             } else if (tipo_paquete == 'T') { 
                 int longitud_apodo = stoi(paquete_recibido.substr(1, 2));
                 string apodo_remitente = paquete_recibido.substr(3, longitud_apodo);
                 int longitud_mensaje = stoi(paquete_recibido.substr(3 + longitud_apodo, 3));
                 string contenido_mensaje = paquete_recibido.substr(3 + longitud_apodo + 3, longitud_mensaje);
                 cout << "\n[PRIVADO de " << apodo_remitente << "]: " << contenido_mensaje << endl;
-
             } else if (tipo_paquete == 'L') { 
                 int total_usuarios = stoi(paquete_recibido.substr(1, 2));
                 cout << "\n--- Lista de Usuarios (" << total_usuarios << ") ---" << endl;
@@ -184,11 +252,9 @@ void recibirMensajes(int socket_cliente) {
                     cout << "-> " << apodo << endl;
                 }
                 cout << "-----------------------------------" << endl;
-
             } else if (tipo_paquete == 'V') { 
                 mi_simbolo_juego = paquete_recibido.substr(1, 1);
                 cout << "\n¡Te toca! Tu símbolo es '" << mi_simbolo_juego << "'" << endl;
-
             } else if (tipo_paquete == 'v') { 
                 string tablero_texto = paquete_recibido.substr(1, DIM_TABLERO * DIM_TABLERO); 
                 cout << "\n--- Tablero Actual ---" << endl;
@@ -205,10 +271,8 @@ void recibirMensajes(int socket_cliente) {
                     }
                 }
                 cout << "----------------------" << endl;
-
             } else if (tipo_paquete == 'F') { 
                 cerr << "Aviso: Recibido paquete 'F' no fragmentado. Ignorando." << endl;
-
             } else if (tipo_paquete == 'O') { 
                 mi_simbolo_juego = "_"; 
                 string resultado = paquete_recibido.substr(1, 3);
@@ -226,42 +290,41 @@ void recibirMensajes(int socket_cliente) {
     }
 }
 
+struct PaqueteEnVuelo {
+    string paquete_completo;
+    chrono::system_clock::time_point tiempo_envio;
+    int reintentos = 0;
+};
+
 int main(int argc, char* argv[]) {
+    // ... (Conexión inicial y lógica de apodo no cambia) ...
     if (argc < 2) {
         cerr << "Modo de uso: " << argv[0] << " <puerto_servidor>\n";
         return 1;
     }
-    
     char* ip_servidor = "127.0.0.1"; 
     int puerto_servidor = atoi(argv[1]);
     struct hostent *host_info = (struct hostent *)gethostbyname(ip_servidor);
-    
     int socket_cliente = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_cliente < 0) {
         perror("Fallo al crear el socket");
         exit(EXIT_FAILURE);
     }
-
     memset(&dir_servidor, 0, sizeof(dir_servidor));
-
     dir_servidor.sin_family = AF_INET;
 	dir_servidor.sin_port = htons(puerto_servidor);
     dir_servidor.sin_addr = *((struct in_addr *)host_info->h_addr);
-
     thread hilo_receptor(recibirMensajes, socket_cliente);
     hilo_receptor.detach();
-
     cout << "Ingresa tu alias: ";
     string apodo_inicial;
     cin >> apodo_inicial;
     string longitud_apodo_str = (apodo_inicial.size() < 10) ? "0" + to_string(apodo_inicial.size()) : to_string(apodo_inicial.size());
     string paquete_apodo = string(1, 'n') + longitud_apodo_str + apodo_inicial;
-    
     paquete_apodo.append(BUFFER_SIZE - paquete_apodo.size(), '#'); 
-    
-    cout << "client envio: " << paquete_apodo.substr(0, 70) << endl;
-    
+    cout << "client envio: " << paquete_apodo.substr(0, 70) << "..." << endl;
     sendto(socket_cliente, paquete_apodo.c_str(), paquete_apodo.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
+    // --- FIN DE CONEXIÓN INICIAL ---
 
 
     int opcion_menu;
@@ -277,17 +340,18 @@ int main(int argc, char* argv[]) {
         }
 
         string contenido, longitud_str, paquete_a_enviar, apodo_destino, longitud_destino_str;
-        char tipo_paquete;
+        char tipo_paquete_menu; // Renombrado para evitar conflicto
 
+        // ... (Opciones 1, 2, 3, 4 no cambian) ...
         if (opcion_menu == 1) { 
-            tipo_paquete = 'n';
+            tipo_paquete_menu = 'n';
             cout << "Ingresa tu nuevo alias: ";
             cin >> contenido;
             int tamNick = contenido.size();
             longitud_str = (tamNick < 10) ? "0" + to_string(tamNick) : to_string(tamNick);
-            paquete_a_enviar = string(1, tipo_paquete) + longitud_str + contenido;
+            paquete_a_enviar = string(1, tipo_paquete_menu) + longitud_str + contenido;
         } else if (opcion_menu == 2) { 
-            tipo_paquete = 't';
+            tipo_paquete_menu = 't';
             cout << "Destinatario: ";
             cin >> apodo_destino;
             cout << "Mensaje: ";
@@ -297,21 +361,22 @@ int main(int argc, char* argv[]) {
             int longitud_mensaje = contenido.size();
             longitud_destino_str = (longitud_destino < 10) ? "0" + to_string(longitud_destino) : to_string(longitud_destino);
             longitud_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
-            paquete_a_enviar = string(1, tipo_paquete) + longitud_destino_str + apodo_destino + longitud_str + contenido;
+            paquete_a_enviar = string(1, tipo_paquete_menu) + longitud_destino_str + apodo_destino + longitud_str + contenido;
         } else if (opcion_menu == 3) { 
-            tipo_paquete = 'm';
+            tipo_paquete_menu = 'm';
             cout << "Mensaje para todos: ";
             cin.ignore();
             getline(cin, contenido);
             int longitud_mensaje = contenido.size();
             longitud_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
-            paquete_a_enviar = string(1, tipo_paquete) + longitud_str + contenido;
+            paquete_a_enviar = string(1, tipo_paquete_menu) + longitud_str + contenido;
         } else if (opcion_menu == 4) { 
-            tipo_paquete = 'l';
-            paquete_a_enviar = string(1, tipo_paquete);
+            tipo_paquete_menu = 'l';
+            paquete_a_enviar = string(1, tipo_paquete_menu);
         } 
+        
         else if(opcion_menu == 5){ 
-            tipo_paquete = 'f'; 
+            
             cout << "Destinatario: ";
             cin >> apodo_destino;
             cout << "Nombre del archivo (local): ";
@@ -335,44 +400,136 @@ int main(int argc, char* argv[]) {
             string longitud_nombre_archivo_str = (nombre_archivo_local.size() < 10) ? "0"+to_string(nombre_archivo_local.size()) : to_string(nombre_archivo_local.size());
             string tamano_archivo_str = string(10 - to_string(tamano_archivo).size(), '0') + to_string(tamano_archivo);
 
-            string encabezado_archivo = string(1, tipo_paquete) + longitud_destino_str + apodo_destino + longitud_nombre_archivo_str + nombre_archivo_local + tamano_archivo_str;
+            // IMPORTANTE: El tipo 'f'/'e' ahora se define DENTRO del bucle
+            // string encabezado_archivo = string(1, 'f') + ... // <-- Eliminamos esto
+            
+            // Este es el encabezado base *sin* el tipo de paquete
+            string encabezado_base = longitud_destino_str + apodo_destino + longitud_nombre_archivo_str + nombre_archivo_local + tamano_archivo_str;
+            
+            // -1 para el tipo, -5 seq, -3 CRC
+            int tamano_fragmento_datos = BUFFER_SIZE - (1 + encabezado_base.size() + 5 + 3); 
+            
+            {
+                std::lock_guard<std::mutex> lock(mtx_acks);
+                acks_recibidos_para_envio_actual.clear();
+            }
 
-            int tamano_fragmento_datos = BUFFER_SIZE - encabezado_archivo.size() - 5; 
-            int num_secuencia = 0;
-            int bytes_enviados = 0;
+            map<int, PaqueteEnVuelo> bufer_envio; 
+            int num_secuencia_actual = 0;
+            int bytes_enviados_confirmados = 0;
+            bool transferencia_exitosa = true;
 
-            while (bytes_enviados < tamano_archivo) {
-                string seq_como_texto = to_string(num_secuencia);
-                string seq_texto_formato = string(5 - seq_como_texto.size(), '0') + seq_como_texto;
-                
-                int tamano_fragmento_actual = min(tamano_fragmento_datos, tamano_archivo - bytes_enviados);
-                
-                string fragmento_datos = datos_archivo.substr(bytes_enviados, tamano_fragmento_actual);
-                
-                string paquete_fragmento = seq_texto_formato + encabezado_archivo + fragmento_datos;
-                
-                bool es_ultimo = (bytes_enviados + tamano_fragmento_actual == tamano_archivo);
+            cout << "Iniciando transferencia fiable (Stop-and-Wait) de " << tamano_archivo << " bytes..." << endl;
 
-                if (es_ultimo) {
-                    paquete_fragmento.append(BUFFER_SIZE - paquete_fragmento.size(), '#');
+            while (bytes_enviados_confirmados < tamano_archivo || !bufer_envio.empty()) {
+
+                if (!acks_recibidos_para_envio_actual.empty()) {
+                    std::lock_guard<std::mutex> lock(mtx_acks);
+                    for (int seq_ack : acks_recibidos_para_envio_actual) {
+                        if (bufer_envio.count(seq_ack)) {
+                            // ACK recibido!
+                            // Calculamos cuánto enviamos en ese paquete
+                            string pkg_enviado = bufer_envio[seq_ack].paquete_completo;
+                            int header_len = 1 + encabezado_base.size() + 5 + 3;
+                            int datos_len = pkg_enviado.size() - header_len;
+                            
+                            // Si tiene padding, hay que restar el padding
+                            if (pkg_enviado[5] == 'e') { // 'e' es el tipo
+                                size_t pos_pad = pkg_enviado.find('#', header_len);
+                                if(pos_pad != string::npos){
+                                    datos_len = pos_pad - header_len;
+                                }
+                            }
+                            
+                            bytes_enviados_confirmados += datos_len;
+                            bufer_envio.erase(seq_ack); 
+                            cout << "-> ACK " << seq_ack << " recibido. (" << bytes_enviados_confirmados << "/" << tamano_archivo << ")" << endl;
+                        }
+                    }
+                    acks_recibidos_para_envio_actual.clear();
                 }
 
-                cout << "client envio: " << paquete_fragmento.substr(0, 70) 
-                     << "... (seq=" << seq_texto_formato << ", tam=" << paquete_fragmento.size() << (es_ultimo ? " (ULTIMO)" : "") << ")\n";
+                auto bufer_envio_copia = bufer_envio; 
+                for (auto& par : bufer_envio_copia) {
+                    int seq_num = par.first;
+                    PaqueteEnVuelo& paquete = par.second;
+                    auto ahora = chrono::system_clock::now();
+                    auto tiempo_transcurrido = chrono::duration_cast<chrono::milliseconds>(ahora - paquete.tiempo_envio).count();
 
-                sendto(socket_cliente, paquete_fragmento.c_str(), paquete_fragmento.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
+                    if (tiempo_transcurrido > TIMEOUT_MS) {
+                        if (paquete.reintentos >= MAX_REINTENTOS) {
+                            cout << "\n¡ERROR! Paquete " << seq_num << " ha fallado " << MAX_REINTENTOS << " veces. Abortando transferencia." << endl;
+                            transferencia_exitosa = false;
+                            break; 
+                        }
+                        paquete.reintentos++;
+                        paquete.tiempo_envio = chrono::system_clock::now();
+                        bufer_envio[seq_num] = paquete; 
+                        cout << "\n¡TIMEOUT! Retransmitiendo paquete seq=" << seq_num 
+                             << " (Intento " << paquete.reintentos << ")" << endl;
+                        cout << "client envio (RE): " << paquete.paquete_completo.substr(0, 70) << "..." << endl;
+                        sendto(socket_cliente, paquete.paquete_completo.c_str(), paquete.paquete_completo.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
+                    }
+                }
+                
+                if (!transferencia_exitosa) {
+                    bufer_envio.clear(); 
+                    break;
+                }
 
-                bytes_enviados += tamano_fragmento_actual;
-                num_secuencia++;
+                if (bufer_envio.empty() && bytes_enviados_confirmados < tamano_archivo) {
+                    
+                    string seq_como_texto = to_string(num_secuencia_actual);
+                    string seq_texto_formato = string(5 - seq_como_texto.size(), '0') + seq_como_texto;
+                    
+                    int tamano_fragmento_actual = min(tamano_fragmento_datos, tamano_archivo - bytes_enviados_confirmados);
+                    string fragmento_datos = datos_archivo.substr(bytes_enviados_confirmados, tamano_fragmento_actual);
+                    
+                    unsigned char crc = calcular_crc(fragmento_datos);
+                    string crc_str = crc_a_texto(crc);
+                    
+                    // +++ MODIFICADO: Decidir tipo 'f' o 'e' +++
+                    bool es_ultimo = (bytes_enviados_confirmados + tamano_fragmento_actual == tamano_archivo);
+                    char tipo_fragmento = (es_ultimo) ? 'e' : 'f';
 
-                usleep(1000); 
+                    string paquete_fragmento = seq_texto_formato + string(1, tipo_fragmento) + encabezado_base + crc_str + fragmento_datos;
+                    // ---
+                    
+                    if (es_ultimo) {
+                        paquete_fragmento.append(BUFFER_SIZE - paquete_fragmento.size(), '#');
+                    }
+
+                    PaqueteEnVuelo paquete_nuevo;
+                    paquete_nuevo.paquete_completo = paquete_fragmento;
+                    paquete_nuevo.tiempo_envio = chrono::system_clock::now();
+                    paquete_nuevo.reintentos = 0;
+                    
+                    bufer_envio[num_secuencia_actual] = paquete_nuevo; 
+
+                    cout << "client envio (NUEVO): " << paquete_fragmento.substr(0, 70) 
+                         << "... (seq=" << seq_texto_formato << ", crc=" << (int)crc << (es_ultimo ? " (ULTIMO)" : "") << ")\n";
+
+                    sendto(socket_cliente, paquete_fragmento.c_str(), paquete_fragmento.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
+                    
+                    num_secuencia_actual++; 
+                }
+
+                usleep(10000); // 10ms
             }
-            
-            continue;
+
+            if (transferencia_exitosa) {
+                cout << "\n¡Transferencia de archivo fiable completada!" << endl;
+            } else {
+                cout << "\nTransferencia de archivo fallida." << endl;
+            }
+
+            continue; 
         }
+        
+        // ... (Opciones 6, 7, 8 no cambian) ...
         else if (opcion_menu == 6) { 
-            tipo_paquete = 'p';
-            paquete_a_enviar = string(1, tipo_paquete);
+            tipo_paquete_menu = 'p';
+            paquete_a_enviar = string(1, tipo_paquete_menu);
         } else if (opcion_menu == 7) { 
             if (mi_simbolo_juego == "_") {
                 cout << "No puedes jugar ahora (no es tu turno o no estás en partida)." << endl;
@@ -383,13 +540,10 @@ int main(int argc, char* argv[]) {
             cin >> posicion_jugada;
             paquete_a_enviar = string(1, 'w') + mi_simbolo_juego + to_string(posicion_jugada);
         } else if (opcion_menu == 8) { 
-            tipo_paquete = 'x';
-            paquete_a_enviar = string(1, tipo_paquete);
-            
+            tipo_paquete_menu = 'x';
+            paquete_a_enviar = string(1, tipo_paquete_menu);
             paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
-
-            cout << "client envio: " << paquete_a_enviar.substr(0, 70) << endl;
-            
+            cout << "client envio: " << paquete_a_enviar.substr(0, 70) << "..." << endl;
             sendto(socket_cliente, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
             break; 
         } else {
@@ -398,8 +552,7 @@ int main(int argc, char* argv[]) {
         }
         
         paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
-        
-        cout << "client envio: " << paquete_a_enviar.substr(0, 70) << endl;
+        cout << "client envio: " << paquete_a_enviar.substr(0, 70) << "..." << endl;
         sendto(socket_cliente, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, (const struct sockaddr *) &dir_servidor, sizeof(dir_servidor));
     }
 

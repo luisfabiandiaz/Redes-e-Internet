@@ -19,17 +19,13 @@
 
 using namespace std;
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 777
+unordered_map<string, string> apodo_por_dir; 
 
-struct ConexionInfo {
-    string apodo;
-    struct sockaddr_in direccion;
-};
+unordered_map<string, struct sockaddr_in> dir_por_apodo;
 
-unordered_map<string, ConexionInfo> conexiones_por_dir;
-unordered_map<string, ConexionInfo> conexiones_por_apodo;
 
-vector<string> jugadores_activos;
+vector<string> jugadores_activos; 
 string simbolo_base = "o";
 const int DIM_TABLERO = 3;
 string estado_tablero[DIM_TABLERO * DIM_TABLERO];
@@ -136,26 +132,24 @@ int main(int argc, char* argv[]) {
         string dir_cliente_texto = direccion_a_texto(dir_cliente);
         string apodo_cliente_actual;
 
-        if (conexiones_por_dir.count(dir_cliente_texto)) {
-            apodo_cliente_actual = conexiones_por_dir[dir_cliente_texto].apodo;
+        if (apodo_por_dir.count(dir_cliente_texto)) {
+            apodo_cliente_actual = apodo_por_dir[dir_cliente_texto];
         } 
         else {
             apodo_cliente_actual = "temp_" + dir_cliente_texto;
-            ConexionInfo nueva_conexion;
-            nueva_conexion.apodo = apodo_cliente_actual;
-            nueva_conexion.direccion = dir_cliente;
-            conexiones_por_dir[dir_cliente_texto] = nueva_conexion;
-            conexiones_por_apodo[apodo_cliente_actual] = nueva_conexion;
+            apodo_por_dir[dir_cliente_texto] = apodo_cliente_actual;
+            dir_por_apodo[apodo_cliente_actual] = dir_cliente;
         }
         
         
-        cout << "\nserv recv: " << paquete_recibido.substr(0, 70) << endl;
+        cout << "\nserv recv: " << paquete_recibido.substr(0, 70) << "..." << endl;
 
         if (isdigit(paquete_recibido[0])) {
+            
             char tipo_fragmento = paquete_recibido[5];
 
-            if (tipo_fragmento != 'f') { 
-                cerr << "Error: Paquete fragmentado no es tipo 'f'" << endl;
+            if (tipo_fragmento != 'f' && tipo_fragmento != 'e') { 
+                cerr << "Error: Paquete fragmentado no es tipo 'f' o 'e'" << endl;
                 continue;
             }
 
@@ -165,14 +159,16 @@ int main(int argc, char* argv[]) {
             string apodo_destino = paquete_recibido.substr(offset, longitud_destino);
             offset += longitud_destino;
             
-            if (conexiones_por_apodo.count(apodo_destino)) {
-                struct sockaddr_in direccion_destino = conexiones_por_apodo[apodo_destino].direccion;
+            if (dir_por_apodo.count(apodo_destino)) {
+                struct sockaddr_in direccion_destino = dir_por_apodo[apodo_destino];
                 
                 string longitud_origen = (apodo_cliente_actual.size() < 10) ? "0" + to_string(apodo_cliente_actual.size()) : to_string(apodo_cliente_actual.size());
                 
-                string paquete_a_enviar = paquete_recibido.substr(0,5) + "F" + longitud_origen + apodo_cliente_actual + paquete_recibido.substr(offset, BUFFER_SIZE - offset);
+                string tipo_para_receptor = (tipo_fragmento == 'e') ? "E" : "F";
+
+                string paquete_a_enviar = paquete_recibido.substr(0,5) + tipo_para_receptor + longitud_origen + apodo_cliente_actual + paquete_recibido.substr(offset, BUFFER_SIZE - offset);
                 
-                cout << "serv envio: " << paquete_a_enviar.substr(0,70) << endl;
+                cout << "serv envio: " << paquete_a_enviar.substr(0,70) << "..." << endl;
                 
                 sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, 
                        (struct sockaddr*)&direccion_destino, sizeof(direccion_destino));
@@ -184,31 +180,74 @@ int main(int argc, char* argv[]) {
 
         char tipo_paquete = paquete_recibido[0];
 
-        if (tipo_paquete == 'n') { 
+        if (tipo_paquete == 'A') {
+            int offset = 6;
+            int longitud_destino = stoi(paquete_recibido.substr(offset, 2));
+            offset += 2;
+            string apodo_destino = paquete_recibido.substr(offset, longitud_destino);
+
+            if (dir_por_apodo.count(apodo_destino)) {
+                struct sockaddr_in direccion_destino = dir_por_apodo[apodo_destino];
+                
+                string longitud_origen = (apodo_cliente_actual.size() < 10) ? "0" + to_string(apodo_cliente_actual.size()) : to_string(apodo_cliente_actual.size());
+                
+                string paquete_a_enviar = paquete_recibido.substr(0, 6) + longitud_origen + apodo_cliente_actual;
+                paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
+
+                cout << "serv envio (ACK): " << paquete_a_enviar.substr(0,70) << "..." << endl;
+                
+                sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, 
+                       (struct sockaddr*)&direccion_destino, sizeof(direccion_destino));
+            } else {
+                 cout << "Error: No se encontró al destinatario del ACK '" << apodo_destino << "'." << endl;
+            }
+            continue; 
+        }
+
+        if (tipo_paquete == 'A') {
+            int offset = 6; 
+            int longitud_destino = stoi(paquete_recibido.substr(offset, 2));
+            offset += 2;
+            string apodo_destino = paquete_recibido.substr(offset, longitud_destino);
+
+            if (dir_por_apodo.count(apodo_destino)) {
+                struct sockaddr_in direccion_destino = dir_por_apodo[apodo_destino];
+                
+                string longitud_origen = (apodo_cliente_actual.size() < 10) ? "0" + to_string(apodo_cliente_actual.size()) : to_string(apodo_cliente_actual.size());
+                
+                string paquete_a_enviar = paquete_recibido.substr(0, 6) + longitud_origen + apodo_cliente_actual;
+                paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
+
+                cout << "serv envio (ACK): " << paquete_a_enviar.substr(0,70) << "..." << endl;
+                
+                sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, 
+                       (struct sockaddr*)&direccion_destino, sizeof(direccion_destino));
+            } else {
+                 cout << "Error: No se encontró al destinatario del ACK '" << apodo_destino << "'." << endl;
+            }
+            continue; 
+        }
+        else if (tipo_paquete == 'n') { 
             int longitud_nuevo_apodo = stoi(paquete_recibido.substr(1, 2));
             string nuevo_apodo = paquete_recibido.substr(3, longitud_nuevo_apodo);
-            string apodo_anterior = conexiones_por_dir[dir_cliente_texto].apodo;
-            
-            conexiones_por_apodo.erase(apodo_anterior);
-            conexiones_por_dir[dir_cliente_texto].apodo = nuevo_apodo;
-            conexiones_por_apodo[nuevo_apodo] = conexiones_por_dir[dir_cliente_texto];
-
+            string apodo_anterior = apodo_por_dir[dir_cliente_texto];
+            apodo_por_dir[dir_cliente_texto] = nuevo_apodo;
+            struct sockaddr_in direccion_cliente_actual = dir_por_apodo[apodo_anterior];
+            dir_por_apodo.erase(apodo_anterior);
+            dir_por_apodo[nuevo_apodo] = direccion_cliente_actual;
         } else if (tipo_paquete == 'm') {
             int longitud_mensaje = stoi(paquete_recibido.substr(1, 3));
             string contenido_mensaje = paquete_recibido.substr(4, longitud_mensaje);
-            
             int tamNick = apodo_cliente_actual.size();
             string longitud_origen = (tamNick < 10) ? "0" + to_string(tamNick) : to_string(tamNick);
             string longitud_mensaje_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
             string paquete_a_enviar = 'M' + longitud_origen + apodo_cliente_actual + longitud_mensaje_str + contenido_mensaje;
-            
             paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
-
-            for (const auto& par : conexiones_por_dir) {
-                if (par.first != dir_cliente_texto) { 
-                    cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << par.second.apodo << ")" << endl;
+            for (const auto& par : dir_por_apodo) {
+                if (par.first != apodo_cliente_actual) { 
+                    cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << par.first << ")" << endl;
                     sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0,
-                           (struct sockaddr*)&par.second.direccion, sizeof(par.second.direccion));
+                           (struct sockaddr*)&par.second, sizeof(par.second));
                 }
             }
         } else if (tipo_paquete == 't') { 
@@ -216,97 +255,82 @@ int main(int argc, char* argv[]) {
             string apodo_destino = paquete_recibido.substr(3, longitud_destino);
             int longitud_mensaje = stoi(paquete_recibido.substr(3 + longitud_destino, 3));
             string contenido_mensaje = paquete_recibido.substr(3 + longitud_destino + 3, longitud_mensaje);
-
             int tamNick = apodo_cliente_actual.size();
             string longitud_origen = (tamNick < 10) ? "0" + to_string(tamNick) : to_string(tamNick);
             string longitud_mensaje_str = (longitud_mensaje < 10) ? "00" + to_string(longitud_mensaje) : (longitud_mensaje < 100) ? "0" + to_string(longitud_mensaje) : to_string(longitud_mensaje);
             string paquete_a_enviar = 'T' + longitud_origen + apodo_cliente_actual + longitud_mensaje_str + contenido_mensaje;
-            
             paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#'); 
-            
-            if (conexiones_por_apodo.count(apodo_destino)) {
-                struct sockaddr_in direccion_destino = conexiones_por_apodo[apodo_destino].direccion;
+            if (dir_por_apodo.count(apodo_destino)) {
+                struct sockaddr_in direccion_destino = dir_por_apodo[apodo_destino];
                 cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << apodo_destino << ")" << endl;
                 sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0,
                        (struct sockaddr*)&direccion_destino, sizeof(direccion_destino));
             }
         } else if (tipo_paquete == 'l') {
             string lista_nombres;
-            for (const auto& par : conexiones_por_apodo) {
+            for (const auto& par : dir_por_apodo) {
                 string tamNick = (par.first.size() < 10) ? "0" + to_string(par.first.size()) : to_string(par.first.size());
                 lista_nombres += tamNick + par.first;
             }
-            string total_clientes_str = (conexiones_por_apodo.size() < 10) ? "0" + to_string(conexiones_por_apodo.size()) : to_string(conexiones_por_apodo.size());
+            string total_clientes_str = (dir_por_apodo.size() < 10) ? "0" + to_string(dir_por_apodo.size()) : to_string(dir_por_apodo.size());
             string paquete_a_enviar = "L" + total_clientes_str + lista_nombres;
-            
             paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
-            
             cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << apodo_cliente_actual << ")" << endl;
             sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0, (struct sockaddr*)&dir_cliente, longitud_dir_cliente);
-
         } else if (tipo_paquete == 'p') { 
-          
             if (find(jugadores_activos.begin(), jugadores_activos.end(), dir_cliente_texto) != jugadores_activos.end()) {
                 continue;
             }
             if (jugadores_activos.size() < 2) {
-                jugadores_activos.push_back(dir_cliente_texto);
+                jugadores_activos.push_back(dir_cliente_texto); 
                 cout << "\n" << apodo_cliente_actual << " ha entrado al juego." << endl;
-                
                 if (jugadores_activos.size() == 2) {
                     cout << "Iniciando el juego." << endl;
-                    
                     string paquete_a_enviar = "Vo";
                     paquete_a_enviar.append(BUFFER_SIZE - paquete_a_enviar.size(), '#');
-                    
-                    struct sockaddr_in dir_jugador1 = conexiones_por_dir[jugadores_activos[0]].direccion;
-                    cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << conexiones_por_dir[jugadores_activos[0]].apodo << ")" << endl;
+                    string apodo_j1 = apodo_por_dir[jugadores_activos[0]];
+                    struct sockaddr_in dir_jugador1 = dir_por_apodo[apodo_j1];
+                    cout << "serv envio: " << paquete_a_enviar.substr(0, 40) << "... (a " << apodo_j1 << ")" << endl;
                     sendto(socket_servidor, paquete_a_enviar.c_str(), paquete_a_enviar.size(), 0,
                            (struct sockaddr*)&dir_jugador1, sizeof(dir_jugador1));
                 }
             }
         } else if (tipo_paquete == 'w') { 
-          
             string simbolo_recibido = paquete_recibido.substr(1, 1);
             int posicion_jugada = stoi(paquete_recibido.substr(2));
-            
             if (posicion_jugada >= 1 && posicion_jugada <= DIM_TABLERO * DIM_TABLERO && estado_tablero[posicion_jugada-1] == "_") {
                 estado_tablero[posicion_jugada - 1] = simbolo_recibido;
                 contador_jugadas++;
-
                 string paquete_tablero = "v"; 
                 for(int i = 0; i < DIM_TABLERO * DIM_TABLERO; ++i) paquete_tablero += estado_tablero[i];
                 paquete_tablero.append(BUFFER_SIZE - paquete_tablero.size(), '#');
-
-                struct sockaddr_in dir_jugador1 = conexiones_por_dir[jugadores_activos[0]].direccion;
-                struct sockaddr_in dir_jugador2 = conexiones_por_dir[jugadores_activos[1]].direccion;
-
+                string apodo_j1 = apodo_por_dir[jugadores_activos[0]];
+                string apodo_j2 = apodo_por_dir[jugadores_activos[1]];
+                struct sockaddr_in dir_jugador1 = dir_por_apodo[apodo_j1];
+                struct sockaddr_in dir_jugador2 = dir_por_apodo[apodo_j2];
                 cout << "serv envio: " << paquete_tablero.substr(0, 40) << "... (a jugador 1)" << endl;
                 sendto(socket_servidor, paquete_tablero.c_str(), paquete_tablero.size(), 0, (struct sockaddr*)&dir_jugador1, sizeof(dir_jugador1));
                 cout << "serv envio: " << paquete_tablero.substr(0, 40) << "... (a jugador 2)" << endl;
                 sendto(socket_servidor, paquete_tablero.c_str(), paquete_tablero.size(), 0, (struct sockaddr*)&dir_jugador2, sizeof(dir_jugador2));
-                
                 if (verificar_ganador(simbolo_recibido)) {
                     string dir_str_ganador = (simbolo_recibido == "o") ? jugadores_activos[0] : jugadores_activos[1];
                     string dir_str_perdedor = (simbolo_recibido == "o") ? jugadores_activos[1] : jugadores_activos[0];
-                    struct sockaddr_in dir_ganador = conexiones_por_dir[dir_str_ganador].direccion;
-                    struct sockaddr_in dir_perdedor = conexiones_por_dir[dir_str_perdedor].direccion;
-                    
+                    string apodo_ganador = apodo_por_dir[dir_str_ganador];
+                    string apodo_perdedor = apodo_por_dir[dir_str_perdedor];
+                    struct sockaddr_in dir_ganador = dir_por_apodo[apodo_ganador];
+                    struct sockaddr_in dir_perdedor = dir_por_apodo[apodo_perdedor];
                     string paquete_victoria = "Owin";
                     paquete_victoria.append(BUFFER_SIZE - paquete_victoria.size(), '#');
                     string paquete_derrota = "Olos";
                     paquete_derrota.append(BUFFER_SIZE - paquete_derrota.size(), '#');
-                    
                     cout << "serv envio: Owin... (a ganador)" << endl;
                     sendto(socket_servidor, paquete_victoria.c_str(), paquete_victoria.size(), 0, (struct sockaddr*)&dir_ganador, sizeof(dir_ganador)); 
                     cout << "serv envio: Olos... (a perdedor)" << endl;
                     sendto(socket_servidor, paquete_derrota.c_str(), paquete_derrota.size(), 0, (struct sockaddr*)&dir_perdedor, sizeof(dir_perdedor)); 
                     preparar_nuevo_juego();
                 } else if (verificar_empate()) {
-                    
                     string paquete_empate = "Oemp";
                     paquete_empate.append(BUFFER_SIZE - paquete_empate.size(), '#');
-
                     cout << "serv envio: Oemp... (a jugadores)" << endl;
                     sendto(socket_servidor, paquete_empate.c_str(), paquete_empate.size(), 0, (struct sockaddr*)&dir_jugador1, sizeof(dir_jugador1)); 
                     sendto(socket_servidor, paquete_empate.c_str(), paquete_empate.size(), 0, (struct sockaddr*)&dir_jugador2, sizeof(dir_jugador2));
@@ -326,23 +350,21 @@ int main(int argc, char* argv[]) {
                 }
             }
         } 
-        
-        else if (tipo_paquete == 'f') {
-            cerr << "Aviso: Recibido paquete 'f' no fragmentado. Ignorando." << endl;
+        else if (tipo_paquete == 'f' || tipo_paquete == 'e') { 
+            cerr << "Aviso: Recibido paquete 'f'/'e' no fragmentado. Ignorando." << endl;
         } 
-
         else if (tipo_paquete == 'x') {
             cout << "\n" << apodo_cliente_actual << " ha cerrado conexión." << endl;
-            conexiones_por_apodo.erase(apodo_cliente_actual);
-            conexiones_por_dir.erase(dir_cliente_texto);
-            
+            dir_por_apodo.erase(apodo_cliente_actual);
+            apodo_por_dir.erase(dir_cliente_texto);
             auto iterador_jugador = find(jugadores_activos.begin(), jugadores_activos.end(), dir_cliente_texto);
             if (iterador_jugador != jugadores_activos.end()) {
                  cout << "\nUn jugador se fue. Reiniciando la partida." << endl;
                  preparar_nuevo_juego();
             }
         }
-    }
+
+    } 
 
     close(socket_servidor);
     return 0;

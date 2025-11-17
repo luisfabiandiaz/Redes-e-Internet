@@ -128,7 +128,7 @@ int main() {
     auto start_paso1 = std::chrono::high_resolution_clock::now();
     MatrixXd At = A.transpose();
     MatrixXd B(N, N);
-    parallel_matmul(At, A, B); // ✅ Paralelizado
+    parallel_matmul(At, A, B); 
     auto end_paso1 = std::chrono::high_resolution_clock::now();
     std::cout << "  Paso 1 completado en " << std::chrono::duration<double>(end_paso1 - start_paso1).count() << "s" << std::endl;
 
